@@ -44,6 +44,7 @@ import {
   PayloadRulesEditor,
   PluginStoreAuthEditor,
 } from './VisualConfigEditorBlocks';
+import { shouldShowPluginVisualConfig } from './pluginVisualConfigGate';
 import styles from './VisualConfigEditor.module.scss';
 
 type VisualSectionId =
@@ -70,6 +71,7 @@ interface VisualConfigEditorProps {
   validationErrors?: VisualConfigValidationErrors;
   hasPayloadValidationErrors?: boolean;
   disabled?: boolean;
+  supportsPlugin?: boolean;
   onChange: (values: Partial<VisualConfigValues>) => void;
 }
 
@@ -86,6 +88,7 @@ type ToggleRowProps = {
   description?: string;
   checked: boolean;
   disabled?: boolean;
+  supportsPlugin?: boolean;
   onChange: (value: boolean) => void;
 };
 
@@ -177,9 +180,11 @@ export function VisualConfigEditor({
   validationErrors,
   hasPayloadValidationErrors = false,
   disabled = false,
+  supportsPlugin = true,
   onChange,
 }: VisualConfigEditorProps) {
   const { t } = useTranslation();
+  const pluginVisualConfigVisible = shouldShowPluginVisualConfig(supportsPlugin);
   const pageTransitionLayer = usePageTransitionLayer();
   const isCurrentLayer = pageTransitionLayer ? pageTransitionLayer.isCurrentLayer : true;
   const isMobile = useMediaQuery('(max-width: 768px)');
@@ -826,13 +831,17 @@ export function VisualConfigEditor({
                   disabled={disabled}
                   onChange={(loggingToFile) => onChange({ loggingToFile })}
                 />
-                <ToggleRow
-                  title={t('config_management.visual.sections.system.plugins_enabled')}
-                  description={t('config_management.visual.sections.system.plugins_enabled_desc')}
-                  checked={values.pluginsEnabled}
-                  disabled={disabled}
-                  onChange={(pluginsEnabled) => onChange({ pluginsEnabled })}
-                />
+                {pluginVisualConfigVisible ? (
+                  <ToggleRow
+                    title={t('config_management.visual.sections.system.plugins_enabled')}
+                    description={t(
+                      'config_management.visual.sections.system.plugins_enabled_desc'
+                    )}
+                    checked={values.pluginsEnabled}
+                    disabled={disabled}
+                    onChange={(pluginsEnabled) => onChange({ pluginsEnabled })}
+                  />
+                ) : null}
                 <ToggleRow
                   title={t('config_management.visual.sections.system.antigravity_signature_cache')}
                   description={t(
@@ -866,43 +875,51 @@ export function VisualConfigEditor({
                   disabled={disabled}
                   hint={t('config_management.visual.sections.system.pprof_addr_hint')}
                 />
-                <Input
-                  label={t('config_management.visual.sections.system.plugins_dir')}
-                  placeholder="plugins"
-                  value={values.pluginsDir}
-                  onChange={(e) => onChange({ pluginsDir: e.target.value })}
-                  disabled={disabled}
-                  hint={t('config_management.visual.sections.system.plugins_dir_desc')}
-                />
-                <FieldShell
-                  label={t('config_management.visual.sections.system.plugin_store_sources')}
-                  htmlFor={pluginStoreSourcesInputId}
-                  hint={t('config_management.visual.sections.system.plugin_store_sources_desc')}
-                  hintId={pluginStoreSourcesHintId}
-                >
-                  <textarea
-                    id={pluginStoreSourcesInputId}
-                    className="input"
-                    rows={4}
-                    value={values.pluginStoreSourcesText}
-                    onChange={(e) => onChange({ pluginStoreSourcesText: e.target.value })}
-                    disabled={disabled}
-                    aria-describedby={pluginStoreSourcesHintId}
-                    placeholder="https://example.com/plugins.json"
-                  />
-                </FieldShell>
-                <div className={styles.fieldWide}>
-                  <FieldShell
-                    label={t('config_management.visual.sections.system.plugin_store_auth')}
-                    hint={t('config_management.visual.sections.system.plugin_store_auth_desc')}
-                  >
-                    <PluginStoreAuthEditor
-                      value={values.pluginStoreAuth}
+                {pluginVisualConfigVisible ? (
+                  <>
+                    <Input
+                      label={t('config_management.visual.sections.system.plugins_dir')}
+                      placeholder="plugins"
+                      value={values.pluginsDir}
+                      onChange={(e) => onChange({ pluginsDir: e.target.value })}
                       disabled={disabled}
-                      onChange={(pluginStoreAuth) => onChange({ pluginStoreAuth })}
+                      hint={t('config_management.visual.sections.system.plugins_dir_desc')}
                     />
-                  </FieldShell>
-                </div>
+                    <FieldShell
+                      label={t('config_management.visual.sections.system.plugin_store_sources')}
+                      htmlFor={pluginStoreSourcesInputId}
+                      hint={t(
+                        'config_management.visual.sections.system.plugin_store_sources_desc'
+                      )}
+                      hintId={pluginStoreSourcesHintId}
+                    >
+                      <textarea
+                        id={pluginStoreSourcesInputId}
+                        className="input"
+                        rows={4}
+                        value={values.pluginStoreSourcesText}
+                        onChange={(e) => onChange({ pluginStoreSourcesText: e.target.value })}
+                        disabled={disabled}
+                        aria-describedby={pluginStoreSourcesHintId}
+                        placeholder="https://example.com/plugins.json"
+                      />
+                    </FieldShell>
+                    <div className={styles.fieldWide}>
+                      <FieldShell
+                        label={t('config_management.visual.sections.system.plugin_store_auth')}
+                        hint={t(
+                          'config_management.visual.sections.system.plugin_store_auth_desc'
+                        )}
+                      >
+                        <PluginStoreAuthEditor
+                          value={values.pluginStoreAuth}
+                          disabled={disabled}
+                          onChange={(pluginStoreAuth) => onChange({ pluginStoreAuth })}
+                        />
+                      </FieldShell>
+                    </div>
+                  </>
+                ) : null}
               </SectionGrid>
 
               <SectionGrid>

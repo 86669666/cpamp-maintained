@@ -33,6 +33,7 @@ import { LogsPage } from '@/pages/LogsPage';
 import { PluginResourcePage } from '@/pages/PluginResourcePage';
 import { PluginsPage } from '@/pages/PluginsPage';
 import { SystemPage } from '@/pages/SystemPage';
+import { CpaSub2apiToolPage } from '@/features/tools/cpaSub2api/CpaSub2apiToolPage';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { CodexInspectionModeTabs } from '@/features/monitoring/components/CodexInspectionModeTabs';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
@@ -287,6 +288,7 @@ const mainRoutes: RouteObject[] = [
   { path: '/plugins/*', element: <Navigate to="/plugins" replace /> },
   { path: '/plugin-store/*', element: <Navigate to="/plugins?tab=store" replace /> },
   { path: '/plugin-pages/*', element: <Navigate to="/" replace /> },
+  { path: '/tools/cpa-sub2api', element: <CpaSub2apiToolPage /> },
   { path: '/config', element: <ConfigPage /> },
   {
     path: '/logs',

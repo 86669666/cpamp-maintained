@@ -188,7 +188,8 @@
     "logs": "記錄檢視",
     "logs_short": "記錄",
     "system_info": "系統資訊",
-    "system_info_short": "系統"
+    "system_info_short": "系統",
+    "cpa_sub2api": "CPA ↔ sub2api"
   },
   "account_actions": {
     "eyebrow": "帳號異常",
@@ -3893,5 +3894,85 @@
     "env_locked_hint": "此開關由服務啟動環境鎖定，請修改環境變數並重新啟動。",
     "env_locked_reason": "由環境變數 {{envKey}} 鎖定。修改該變數並重新啟動服務後才能變更此開關。",
     "gating_note": "關閉某項策略只會影響之後發現的新問題；已經排隊或正在處理的任務會繼續完成。"
+  },
+  "cpa_sub2api": {
+    "title": "CPA ↔ sub2api 轉換工具",
+    "description": "在 CLIProxyAPI 驗證 JSON 與 sub2api 帳號設定之間雙向轉換。",
+    "source": "上游原始碼",
+    "privacy_title": "僅在瀏覽器本機轉換",
+    "privacy_description": "檔案、貼上的 JSON 與 token 僅存在目前瀏覽器分頁。本工具不發出網路請求，也不持久保存資料。",
+    "direction": "轉換方向",
+    "providers": "支援平台",
+    "import_method": "匯入方式",
+    "import_files": "檔案匯入",
+    "import_paste": "貼上匯入",
+    "choose_files": "選擇檔案",
+    "choose_folder": "選擇目錄",
+    "limits": "每次最多 {{maxFiles}} 個檔案；單檔 {{maxFileMb}} MiB，合計 {{maxTotalMb}} MiB。",
+    "paste_label": "貼上 JSON 內容",
+    "paste_placeholder": "支援單一 JSON、連續多個 JSON 或 JSONL",
+    "paste_hint": "最大 {{maxPasteMb}} MiB；Ctrl/Cmd + Enter 可直接轉換。",
+    "paste_required": "請先貼上一個或多個 JSON 文件。",
+    "paste_result": "讀取 {{read}} 項，其中 {{issues}} 項解析異常。",
+    "convert": "轉換",
+    "clear": "清空",
+    "download": "下載",
+    "success": "成功轉換",
+    "api_keys": "API 金鑰",
+    "skipped": "略過項",
+    "imported": "讀取項",
+    "results": "轉換結果",
+    "api_key_results": "API 金鑰轉換結果",
+    "api_key_warning": "這些結果包含敏感的 API 金鑰。下載的檔案將包含完整憑證。",
+    "download_api_keys": "下載 CLIProxyAPI 提供商設定",
+    "summary": "共讀取 {{imported}} 項，產生 {{converted}} 個結果，略過 {{skipped}} 項。",
+    "download_individual": "匯出單檔",
+    "issues_title": "略過 / 錯誤",
+    "no_issues": "暫無問題。",
+    "unnamed": "未命名輸入",
+    "columns": {
+      "source": "輸入來源",
+      "output": "輸出檔案",
+      "provider": "平台",
+      "provider_key": "提供商金鑰",
+      "account_name": "帳號名稱",
+      "email": "電子郵件",
+      "key_preview": "金鑰預覽",
+      "expiry": "到期時間",
+      "action": "操作"
+    },
+    "modes": {
+      "cpaToSub2Api": {
+        "tab": "CPA → sub2api",
+        "input": "CPA 驗證 JSON",
+        "output": "sub2api 帳號",
+        "import_title": "匯入 CPA 驗證檔案",
+        "import_description": "支援多檔、目錄、拖放與貼上 JSON。",
+        "drop": "將 CPA JSON 檔案拖到這裡",
+        "empty": "匯入 CPA 驗證 JSON 後產生 sub2api 檔案。",
+        "download_merged": "下載合併 sub2api JSON"
+      },
+      "sub2apiToCpa": {
+        "tab": "sub2api → CPA",
+        "input": "sub2api 帳號",
+        "output": "CPA 驗證 JSON",
+        "import_title": "匯入 sub2api 設定",
+        "import_description": "支援單一帳號、accounts 陣列與合併設定。",
+        "drop": "將 sub2api JSON 檔案拖到這裡",
+        "empty": "匯入 sub2api 設定後產生 CPA 驗證檔案。",
+        "download_merged": "下載 CPA ZIP"
+      }
+    },
+    "issues": {
+      "notJson": "僅支援 JSON 檔案。",
+      "tooLarge": "檔案超過 {{maxFileMb}} MiB。",
+      "tooMany": "每次僅處理前 {{maxFiles}} 個檔案。",
+      "totalTooLarge": "接收檔案將超過 {{maxTotalMb}} MiB 總量限制。",
+      "paste_too_large": "貼上內容超過 {{maxPasteMb}} MiB。",
+      "duplicate": "重複內容已略過。",
+      "invalid": "無法轉換此項目。",
+      "invalid_json": "JSON 格式無效。"
+    },
+    "paste_item": "貼上內容 #{{index}}"
   }
 }

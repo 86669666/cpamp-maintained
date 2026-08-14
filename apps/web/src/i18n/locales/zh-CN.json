@@ -188,7 +188,8 @@
     "logs": "日志查看",
     "logs_short": "日志",
     "system_info": "系统信息",
-    "system_info_short": "系统"
+    "system_info_short": "系统",
+    "cpa_sub2api": "CPA ↔ sub2api"
   },
   "account_actions": {
     "eyebrow": "账号异常",
@@ -3893,5 +3894,85 @@
     "env_locked_hint": "该开关由服务启动环境锁定，请修改环境变量并重启。",
     "env_locked_reason": "由环境变量 {{envKey}} 锁定。修改该变量并重启服务后才能更改此开关。",
     "gating_note": "关闭某项策略只会影响之后发现的新问题；已经排队或正在处理的任务会继续完成。"
+  },
+  "cpa_sub2api": {
+    "title": "CPA ↔ sub2api 转换工具",
+    "description": "在 CLIProxyAPI 认证 JSON 与 sub2api 账号配置之间双向转换。",
+    "source": "上游源码",
+    "privacy_title": "仅在浏览器本地转换",
+    "privacy_description": "文件、粘贴的 JSON 和 token 仅存在于当前浏览器标签页。本工具不发起网络请求，也不持久化保存数据。",
+    "direction": "转换方向",
+    "providers": "支持平台",
+    "import_method": "导入方式",
+    "import_files": "文件导入",
+    "import_paste": "粘贴导入",
+    "choose_files": "选择文件",
+    "choose_folder": "选择目录",
+    "limits": "每次最多 {{maxFiles}} 个文件；单文件 {{maxFileMb}} MiB，总计 {{maxTotalMb}} MiB。",
+    "paste_label": "粘贴 JSON 内容",
+    "paste_placeholder": "支持单个 JSON、连续多个 JSON 或 JSONL",
+    "paste_hint": "最大 {{maxPasteMb}} MiB；Ctrl/Cmd + Enter 可直接转换。",
+    "paste_required": "请先粘贴一个或多个 JSON 文档。",
+    "paste_result": "读取 {{read}} 项，其中 {{issues}} 项解析异常。",
+    "convert": "转换",
+    "clear": "清空",
+    "download": "下载",
+    "success": "成功转换",
+    "api_keys": "API 密钥",
+    "skipped": "跳过项",
+    "imported": "读取项",
+    "results": "转换结果",
+    "api_key_results": "API 密钥转换结果",
+    "api_key_warning": "这些结果包含敏感的 API 密钥。下载的文件将包含完整凭据。",
+    "download_api_keys": "下载 CLIProxyAPI 提供商配置",
+    "summary": "共读取 {{imported}} 项，生成 {{converted}} 个结果，跳过 {{skipped}} 项。",
+    "download_individual": "导出单文件",
+    "issues_title": "跳过 / 错误",
+    "no_issues": "暂无问题。",
+    "unnamed": "未命名输入",
+    "columns": {
+      "source": "输入来源",
+      "output": "输出文件",
+      "provider": "平台",
+      "provider_key": "提供商密钥",
+      "account_name": "账号名称",
+      "email": "邮箱",
+      "key_preview": "密钥预览",
+      "expiry": "过期时间",
+      "action": "操作"
+    },
+    "modes": {
+      "cpaToSub2Api": {
+        "tab": "CPA → sub2api",
+        "input": "CPA 认证 JSON",
+        "output": "sub2api 账号",
+        "import_title": "导入 CPA 认证文件",
+        "import_description": "支持多文件、目录、拖拽和粘贴 JSON。",
+        "drop": "拖拽 CPA JSON 文件到这里",
+        "empty": "导入 CPA 认证 JSON 后生成 sub2api 文件。",
+        "download_merged": "下载合并 sub2api JSON"
+      },
+      "sub2apiToCpa": {
+        "tab": "sub2api → CPA",
+        "input": "sub2api 账号",
+        "output": "CPA 认证 JSON",
+        "import_title": "导入 sub2api 配置",
+        "import_description": "支持单账号、accounts 数组和合并配置。",
+        "drop": "拖拽 sub2api JSON 文件到这里",
+        "empty": "导入 sub2api 配置后生成 CPA 认证文件。",
+        "download_merged": "下载 CPA ZIP"
+      }
+    },
+    "issues": {
+      "notJson": "仅支持 JSON 文件。",
+      "tooLarge": "文件超过 {{maxFileMb}} MiB。",
+      "tooMany": "每次仅处理前 {{maxFiles}} 个文件。",
+      "totalTooLarge": "接收文件将超过 {{maxTotalMb}} MiB 总量限制。",
+      "paste_too_large": "粘贴内容超过 {{maxPasteMb}} MiB。",
+      "duplicate": "重复内容已忽略。",
+      "invalid": "无法转换该项目。",
+      "invalid_json": "JSON 格式无效。"
+    },
+    "paste_item": "粘贴内容 #{{index}}"
   }
 }

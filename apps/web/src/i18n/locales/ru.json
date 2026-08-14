@@ -188,7 +188,8 @@
     "logs": "Просмотр логов",
     "logs_short": "Логи",
     "system_info": "Информация системы",
-    "system_info_short": "Система"
+    "system_info_short": "Система",
+    "cpa_sub2api": "CPA ↔ sub2api"
   },
   "account_actions": {
     "eyebrow": "Проблемы аккаунтов",
@@ -3893,5 +3894,85 @@
     "env_locked_hint": "Этот переключатель зафиксирован переменной окружения. Измените переменную окружения сервиса и перезапустите его, чтобы изменить значение.",
     "env_locked_reason": "Зафиксировано переменной окружения {{envKey}}. Измените её и перезапустите сервис, чтобы изменить этот переключатель.",
     "gating_note": "Отключение переключателя влияет только на новые проблемы, найденные мониторингом. Уже поставленные или выполняющиеся задачи продолжат работу."
+  },
+  "cpa_sub2api": {
+    "title": "Конвертер CPA ↔ sub2api",
+    "description": "Двустороннее преобразование JSON авторизации CLIProxyAPI и аккаунтов sub2api.",
+    "source": "Исходный проект",
+    "privacy_title": "Обработка только в браузере",
+    "privacy_description": "Файлы, вставленный JSON и токены остаются в текущей вкладке. Инструмент не выполняет сетевых запросов и ничего не сохраняет.",
+    "direction": "Направление",
+    "providers": "Поддерживаемые платформы",
+    "import_method": "Способ импорта",
+    "import_files": "Файлы",
+    "import_paste": "Вставка JSON",
+    "choose_files": "Выбрать файлы",
+    "choose_folder": "Выбрать папку",
+    "limits": "До {{maxFiles}} файлов, {{maxFileMb}} МиБ на файл и {{maxTotalMb}} МиБ всего.",
+    "paste_label": "Вставьте JSON",
+    "paste_placeholder": "Один JSON, несколько JSON подряд или JSONL",
+    "paste_hint": "До {{maxPasteMb}} МиБ. Ctrl/Cmd + Enter — преобразовать.",
+    "paste_required": "Сначала вставьте один или несколько JSON-документов.",
+    "paste_result": "Прочитано: {{read}}; ошибок разбора: {{issues}}.",
+    "convert": "Преобразовать",
+    "clear": "Очистить",
+    "download": "Скачать",
+    "success": "Преобразовано",
+    "api_keys": "API-ключи",
+    "skipped": "Пропущено",
+    "imported": "Прочитано",
+    "results": "Результаты",
+    "api_key_results": "Результаты преобразования API-ключей",
+    "api_key_warning": "Эти результаты содержат конфиденциальные API-ключи. Загрузка включит полные учётные данные.",
+    "download_api_keys": "Скачать конфигурацию провайдера CLIProxyAPI",
+    "summary": "Прочитано {{imported}}, создано {{converted}}, пропущено {{skipped}}.",
+    "download_individual": "Скачать отдельные файлы",
+    "issues_title": "Пропуски / ошибки",
+    "no_issues": "Ошибок нет.",
+    "unnamed": "Без имени",
+    "columns": {
+      "source": "Источник",
+      "output": "Выходной файл",
+      "provider": "Платформа",
+      "provider_key": "Ключ провайдера",
+      "account_name": "Имя аккаунта",
+      "email": "Email",
+      "key_preview": "Предпросмотр ключа",
+      "expiry": "Истекает",
+      "action": "Действие"
+    },
+    "modes": {
+      "cpaToSub2Api": {
+        "tab": "CPA → sub2api",
+        "input": "JSON авторизации CPA",
+        "output": "Аккаунты sub2api",
+        "import_title": "Импорт файлов CPA",
+        "import_description": "Поддерживаются несколько файлов, папка, перетаскивание и вставка JSON.",
+        "drop": "Перетащите JSON CPA сюда",
+        "empty": "Импортируйте JSON CPA для создания файлов sub2api.",
+        "download_merged": "Скачать объединённый JSON sub2api"
+      },
+      "sub2apiToCpa": {
+        "tab": "sub2api → CPA",
+        "input": "Аккаунты sub2api",
+        "output": "JSON авторизации CPA",
+        "import_title": "Импорт конфигурации sub2api",
+        "import_description": "Поддерживаются один аккаунт, массив accounts и объединённая конфигурация.",
+        "drop": "Перетащите JSON sub2api сюда",
+        "empty": "Импортируйте sub2api для создания файлов CPA.",
+        "download_merged": "Скачать ZIP CPA"
+      }
+    },
+    "issues": {
+      "notJson": "Принимаются только JSON-файлы.",
+      "tooLarge": "Файл превышает {{maxFileMb}} МиБ.",
+      "tooMany": "Обрабатываются только первые {{maxFiles}} файлов.",
+      "totalTooLarge": "Файлы превысят общий лимит {{maxTotalMb}} МиБ.",
+      "paste_too_large": "Вставленный текст превышает {{maxPasteMb}} МиБ.",
+      "duplicate": "Повторный ввод пропущен.",
+      "invalid": "Не удалось преобразовать элемент.",
+      "invalid_json": "Некорректный JSON."
+    },
+    "paste_item": "Вставка #{{index}}"
   }
 }

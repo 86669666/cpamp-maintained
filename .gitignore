@@ -49,3 +49,6 @@ TODO.md
 
 # Local temp scratch files
 .tmp-*
+
+# Reproducible maintained build output
+/output-maintained/

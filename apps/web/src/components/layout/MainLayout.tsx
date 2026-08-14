@@ -26,6 +26,7 @@ import {
   IconSidebarQuota,
   IconSidebarSystem,
   IconSidebarUsage,
+  IconFileText,
 } from '@/components/ui/icons';
 import { INLINE_LOGO_JPEG } from '@/assets/logoInline';
 import {
@@ -69,6 +70,7 @@ const sidebarIcons: Record<string, ReactNode> = {
   config: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
   logs: <IconSidebarLogs size={SIDEBAR_ICON_SIZE} />,
   system: <IconSidebarSystem size={SIDEBAR_ICON_SIZE} />,
+  cpaSub2api: <IconFileText size={SIDEBAR_ICON_SIZE} />,
 };
 
 // Header action icons - smaller size for header buttons
@@ -608,6 +610,14 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
     ],
     operationNavItems,
     pluginResourceNavItems,
+    [
+      {
+        path: '/tools/cpa-sub2api',
+        label: t('nav.cpa_sub2api'),
+        shortLabel: t('nav.cpa_sub2api'),
+        icon: sidebarIcons.cpaSub2api,
+      },
+    ],
     [
       {
         path: '/system',

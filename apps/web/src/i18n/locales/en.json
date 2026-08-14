@@ -188,7 +188,8 @@
     "logs": "Logs Viewer",
     "logs_short": "Logs",
     "system_info": "System Info",
-    "system_info_short": "System"
+    "system_info_short": "System",
+    "cpa_sub2api": "CPA ↔ sub2api"
   },
   "account_actions": {
     "eyebrow": "Account issues",
@@ -3893,5 +3894,85 @@
     "env_locked_hint": "This switch is locked by the service startup environment. Update the environment variable and restart to change it.",
     "env_locked_reason": "Locked by the {{envKey}} environment variable. Update it and restart the service to change this switch.",
     "gating_note": "Disabling a switch only affects new problems found later. Tasks already queued or in progress will continue to finish."
+  },
+  "cpa_sub2api": {
+    "title": "CPA ↔ sub2api Converter",
+    "description": "Convert CLIProxyAPI auth JSON and sub2api account files in either direction.",
+    "source": "Upstream source",
+    "privacy_title": "Browser-local conversion",
+    "privacy_description": "Files, pasted JSON, and tokens stay in this browser tab. This tool makes no network requests and stores nothing persistently.",
+    "direction": "Conversion direction",
+    "providers": "Supported providers",
+    "import_method": "Import method",
+    "import_files": "File import",
+    "import_paste": "Paste JSON",
+    "choose_files": "Choose files",
+    "choose_folder": "Choose folder",
+    "limits": "Up to {{maxFiles}} files per action, {{maxFileMb}} MiB each and {{maxTotalMb}} MiB total.",
+    "paste_label": "Paste JSON content",
+    "paste_placeholder": "Paste one JSON document, concatenated JSON documents, or JSONL",
+    "paste_hint": "Maximum {{maxPasteMb}} MiB. Press Ctrl/Cmd + Enter to convert.",
+    "paste_required": "Paste one or more JSON documents first.",
+    "paste_result": "Read {{read}} items; {{issues}} parse issues.",
+    "convert": "Convert",
+    "clear": "Clear",
+    "download": "Download",
+    "success": "Converted",
+    "api_keys": "API Keys",
+    "skipped": "Skipped",
+    "imported": "Imported",
+    "results": "Conversion results",
+    "api_key_results": "API Key conversion results",
+    "api_key_warning": "These results contain sensitive API keys. Download will include full credentials.",
+    "download_api_keys": "Download CLIProxyAPI provider config",
+    "summary": "Read {{imported}} items, generated {{converted}} results, skipped {{skipped}}.",
+    "download_individual": "Download individual results",
+    "issues_title": "Skipped / errors",
+    "no_issues": "No issues.",
+    "unnamed": "Unnamed input",
+    "columns": {
+      "source": "Input",
+      "output": "Output file",
+      "provider": "Provider",
+      "provider_key": "Provider Key",
+      "account_name": "Account Name",
+      "email": "Email",
+      "key_preview": "Key Preview",
+      "expiry": "Expiry",
+      "action": "Action"
+    },
+    "modes": {
+      "cpaToSub2Api": {
+        "tab": "CPA → sub2api",
+        "input": "CPA auth JSON",
+        "output": "sub2api accounts",
+        "import_title": "Import CPA auth files",
+        "import_description": "Choose multiple JSON files, a directory, drag and drop, or paste JSON.",
+        "drop": "Drop CPA JSON files here",
+        "empty": "Import CPA auth JSON to generate sub2api files.",
+        "download_merged": "Download merged sub2api JSON"
+      },
+      "sub2apiToCpa": {
+        "tab": "sub2api → CPA",
+        "input": "sub2api accounts",
+        "output": "CPA auth JSON",
+        "import_title": "Import sub2api config",
+        "import_description": "Single account, accounts arrays, and merged configurations are supported.",
+        "drop": "Drop sub2api JSON files here",
+        "empty": "Import a sub2api configuration to generate CPA auth files.",
+        "download_merged": "Download CPA ZIP"
+      }
+    },
+    "issues": {
+      "notJson": "Only JSON files are accepted.",
+      "tooLarge": "File exceeds {{maxFileMb}} MiB.",
+      "tooMany": "Only the first {{maxFiles}} files are processed per action.",
+      "totalTooLarge": "Accepted files would exceed the {{maxTotalMb}} MiB total limit.",
+      "paste_too_large": "Pasted content exceeds {{maxPasteMb}} MiB.",
+      "duplicate": "Duplicate input was ignored.",
+      "invalid": "Unable to convert this item.",
+      "invalid_json": "Invalid JSON."
+    },
+    "paste_item": "Pasted item #{{index}}"
   }
 }

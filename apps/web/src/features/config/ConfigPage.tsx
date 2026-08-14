@@ -238,6 +238,7 @@ function normalizeYamlForVisualDiff(yamlContent: string): string {
 }
 
 export function ConfigPage() {
+  const supportsPlugin = useAuthStore((state) => state.supportsPlugin);
   const { t } = useTranslation();
   const pageTransitionLayer = usePageTransitionLayer();
   const isCurrentLayer = pageTransitionLayer ? pageTransitionLayer.isCurrentLayer : true;
@@ -1317,6 +1318,7 @@ export function ConfigPage() {
               validationErrors={visualValidationErrors}
               hasPayloadValidationErrors={visualHasPayloadValidationErrors}
               disabled={disableControls || loading}
+              supportsPlugin={supportsPlugin}
               onChange={setVisualValues}
             />
           ) : (

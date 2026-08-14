@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+baseline_commit="68b57da8c206c023120a3e7597e5d729eac2760f"
+baseline_tag="v1.11.12"
+variant="lightweight-plugin-lockdown-local-tools"
+revision="1"
+output_dir="$repo_root/output-maintained"
+source_html="$repo_root/apps/web/dist/index.html"
+output_html="$output_dir/management.html"
+
+fail() {
+  printf 'maintained build failed: %s\n' "$*" >&2
+  exit 1
+}
+
+command -v git >/dev/null || fail "git is required"
+command -v npm >/dev/null || fail "npm is required"
+command -v sha256sum >/dev/null || fail "sha256sum is required"
+command -v python3 >/dev/null || fail "python3 is required"
+
+git cat-file -e "${baseline_commit}^{commit}" 2>/dev/null || fail "baseline commit is unavailable"
+resolved_tag="$(git rev-list -n 1 "$baseline_tag" 2>/dev/null || true)"
+[[ "$resolved_tag" == "$baseline_commit" ]] || fail "baseline tag does not resolve to the pinned commit"
+head_commit="$(git rev-parse HEAD)"
+merge_base="$(git merge-base HEAD "$baseline_commit" 2>/dev/null || true)"
+[[ "$merge_base" == "$baseline_commit" ]] || fail "HEAD is not based on the pinned upstream commit"
+
+npm run type-check
+npm run lint
+npm run test
+npm run build
+
+[[ -s "$source_html" ]] || fail "single-file web build is missing"
+mkdir -p "$output_dir"
+rm -f "$output_html" "$output_dir/SHA256SUMS" "$output_dir/metadata.json"
+cp "$source_html" "$output_html"
+
+python3 - "$output_html" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+artifact = Path(sys.argv[1])
+data = artifact.read_bytes()
+text = data.decode('utf-8', errors='ignore')
+
+forbidden_markers = [
+    'APIKEY' + '.FUN',
+    'apikey' + '.fun',
+    'APIKEY' + '_FUN',
+    'apikey' + 'Fun',
+    'aff=' + 'AKCPA',
+]
+for marker in forbidden_markers:
+    if marker in text:
+        raise SystemExit(f'forbidden marker found in production artifact: {marker}')
+
+secret_patterns = {
+    'private key block': rb'-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----',
+    'AWS access key': rb'AKIA[0-9A-Z]{16}',
+    'GitHub token': rb'gh[pousr]_[A-Za-z0-9]{30,}',
+    'generic live secret': rb'(?i)(?:api[_-]?key|secret|token)["\'\s:=]{1,12}(?:sk-|rk-|pk_live_)[A-Za-z0-9_-]{16,}',
+}
+for label, pattern in secret_patterns.items():
+    if re.search(pattern, data):
+        raise SystemExit(f'typical credential pattern found in production artifact: {label}')
+PY
+
+artifact_sha="$(sha256sum "$output_html" | awk '{print $1}')"
+artifact_size="$(wc -c < "$output_html" | tr -d ' ')"
+printf '%s  %s\n' "$artifact_sha" "management.html" > "$output_dir/SHA256SUMS"
+
+BUILD_TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+HEAD_COMMIT="$head_commit" \
+ARTIFACT_SHA="$artifact_sha" \
+ARTIFACT_SIZE="$artifact_size" \
+python3 - "$output_dir/metadata.json" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+metadata = {
+    'variant': 'lightweight-plugin-lockdown-local-tools',
+    'revision': 1,
+    'upstream': {
+        'repository': 'https://github.com/seakee/CPA-Manager-Plus.git',
+        'tag': 'v1.11.12',
+        'commit': '68b57da8c206c023120a3e7597e5d729eac2760f',
+    },
+    'sourceHead': os.environ['HEAD_COMMIT'],
+    'dirtyWorktreeAllowed': True,
+    'builtAt': os.environ['BUILD_TIMESTAMP'],
+    'artifact': {
+        'path': 'management.html',
+        'sha256': os.environ['ARTIFACT_SHA'],
+        'sizeBytes': int(os.environ['ARTIFACT_SIZE']),
+    },
+}
+Path(sys.argv[1]).write_text(json.dumps(metadata, indent=2) + '\n')
+PY
+
+printf 'maintained artifact: %s\n' "$output_html"
+printf 'sha256: %s\n' "$artifact_sha"
+printf 'size: %s bytes\n' "$artifact_size"

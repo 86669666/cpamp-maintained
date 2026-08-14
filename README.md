@@ -15,6 +15,10 @@ Operate providers, credentials, OAuth, plugins, and configuration while keeping 
 
 </div>
 
+## Maintained Lightweight Variant
+
+This maintained lightweight variant stays based on upstream CPA Manager Plus `v1.11.12` (`68b57da8c206c023120a3e7597e5d729eac2760f`). Plugin UI capability follows the server-provided `X-CPA-Support-Plugin` header; when unsupported, plugin management and plugin-related visual configuration controls remain hidden. The bundled CPA ↔ sub2api tool processes files and pasted JSON only inside the current browser tab, without network requests or persistence. Upstream CPA Manager Plus remains attributed and distributed under its MIT License, and the adapted CPA2sub2API tool retains its own bundled MIT notice.
+
 ## What Can CPAMP Help You Answer?
 
 - **Why are requests failing?** Inspect failure rates, status codes, affected models/accounts, and redacted evidence in persistent request history.
