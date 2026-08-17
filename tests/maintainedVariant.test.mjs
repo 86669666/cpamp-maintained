@@ -39,10 +39,24 @@ describe('maintained lightweight variant', () => {
     expect(script).toContain('npm run lint');
     expect(script).toContain('npm run test');
     expect(script).toContain('npm run build');
+    expect(script).toContain('git status --porcelain --untracked-files=all');
+    expect(script).toContain('git ls-files --others --ignored --exclude-standard');
+    expect(script).toContain('ignored environment input detected');
+    expect(script).toContain('VITE_DEFAULT_CPA_BASE_URL must be unset');
+    expect(script).toContain('VITE_DEMO_SITE must be unset');
+    expect(script).toContain('DEMO_SITE must be unset');
+    expect(script).toContain('HEAD tag does not match RELEASE_TAG');
+    expect(script).toContain('VERSION does not match RELEASE_TAG');
+    expect(script).toContain('VERSION must be unset outside a tagged release build');
+    expect(script).toContain('VERSION="$build_version" npm run build');
+    expect(script).toContain("'buildVersion': os.environ['BUILD_VERSION']");
     expect(script).toContain('output-maintained');
     expect(script).toContain('management.html');
     expect(script).toContain('SHA256SUMS');
     expect(script).toContain('metadata.json');
+    expect(script).toContain('SOURCE_COMMIT');
+    expect(script).toContain("'dirtyWorktreeAllowed': False");
+    expect(script).toContain('sha256sum management.html metadata.json SOURCE_COMMIT');
     expect(script).not.toMatch(/rm\s+-rf\s+(?:\.\/)?(?:apps|src|maintained|scripts)\b/);
   });
 

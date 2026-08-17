@@ -4,8 +4,9 @@ import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const source = (...parts: string[]) => readFileSync(join(root, ...parts), 'utf8');
-const featureDir = join(root, 'src', 'features', 'tools', 'cpaSub2api');
+const webRoot = join(root, 'apps', 'web');
+const source = (...parts: string[]) => readFileSync(join(webRoot, ...parts), 'utf8');
+const featureDir = join(webRoot, 'src', 'features', 'tools', 'cpaSub2api');
 
 describe('built-in CPA ↔ sub2api tool integration', () => {
   test('registers the exact route and visible Tools navigation without weakening plugin lockdown', () => {

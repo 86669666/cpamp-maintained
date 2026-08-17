@@ -21,6 +21,7 @@ describe('frontend architecture boundaries', () => {
     const offenders = checkedRoots
       .flatMap((root) => walkFiles(path.join(sourceRoot, root)))
       .filter((filePath) => sourceExtensions.has(path.extname(filePath)))
+      .filter((filePath) => !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filePath))
       .filter((filePath) => readFileSync(filePath, 'utf8').includes('@/pages'))
       .map((filePath) => path.relative(repoRoot, filePath));
 

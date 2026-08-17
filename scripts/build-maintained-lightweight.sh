@@ -28,11 +28,32 @@ resolved_tag="$(git rev-list -n 1 "$baseline_tag" 2>/dev/null || true)"
 head_commit="$(git rev-parse HEAD)"
 merge_base="$(git merge-base HEAD "$baseline_commit" 2>/dev/null || true)"
 [[ "$merge_base" == "$baseline_commit" ]] || fail "HEAD is not based on the pinned upstream commit"
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] || fail "release source worktree is not clean"
+mapfile -t ignored_env_files < <(
+  git ls-files --others --ignored --exclude-standard -- \
+    '.env*' 'apps/web/.env*' 'apps/docs/.env*'
+)
+[[ "${#ignored_env_files[@]}" -eq 0 ]] || fail "ignored environment input detected: ${ignored_env_files[*]}"
+[[ -z "${VITE_DEFAULT_CPA_BASE_URL:-}" ]] || fail "VITE_DEFAULT_CPA_BASE_URL must be unset for release builds"
+[[ -z "${VITE_DEMO_SITE:-}" ]] || fail "VITE_DEMO_SITE must be unset for release builds"
+[[ -z "${DEMO_SITE:-}" ]] || fail "DEMO_SITE must be unset for release builds"
+source_tag="$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+if [[ -n "${RELEASE_TAG:-}" ]]; then
+  [[ "$source_tag" == "$RELEASE_TAG" ]] || fail "HEAD tag does not match RELEASE_TAG"
+fi
+if [[ -n "${VERSION:-}" ]]; then
+  if [[ -n "${RELEASE_TAG:-}" ]]; then
+    [[ "$VERSION" == "$RELEASE_TAG" ]] || fail "VERSION does not match RELEASE_TAG"
+  else
+    fail "VERSION must be unset outside a tagged release build"
+  fi
+fi
+build_version="${RELEASE_TAG:-${source_tag:-dev}}"
 
 npm run type-check
 npm run lint
 npm run test
-npm run build
+VERSION="$build_version" npm run build
 
 [[ -s "$source_html" ]] || fail "single-file web build is missing"
 mkdir -p "$output_dir"
@@ -72,10 +93,11 @@ PY
 
 artifact_sha="$(sha256sum "$output_html" | awk '{print $1}')"
 artifact_size="$(wc -c < "$output_html" | tr -d ' ')"
-printf '%s  %s\n' "$artifact_sha" "management.html" > "$output_dir/SHA256SUMS"
 
 BUILD_TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
 HEAD_COMMIT="$head_commit" \
+SOURCE_TAG="$source_tag" \
+BUILD_VERSION="$build_version" \
 ARTIFACT_SHA="$artifact_sha" \
 ARTIFACT_SIZE="$artifact_size" \
 python3 - "$output_dir/metadata.json" <<'PY'
@@ -93,7 +115,9 @@ metadata = {
         'commit': '68b57da8c206c023120a3e7597e5d729eac2760f',
     },
     'sourceHead': os.environ['HEAD_COMMIT'],
-    'dirtyWorktreeAllowed': True,
+    'sourceTag': os.environ.get('SOURCE_TAG') or None,
+    'buildVersion': os.environ['BUILD_VERSION'],
+    'dirtyWorktreeAllowed': False,
     'builtAt': os.environ['BUILD_TIMESTAMP'],
     'artifact': {
         'path': 'management.html',
@@ -103,6 +127,12 @@ metadata = {
 }
 Path(sys.argv[1]).write_text(json.dumps(metadata, indent=2) + '\n')
 PY
+
+printf '%s\n' "$head_commit" > "$output_dir/SOURCE_COMMIT"
+(
+  cd "$output_dir"
+  sha256sum management.html metadata.json SOURCE_COMMIT > SHA256SUMS
+)
 
 printf 'maintained artifact: %s\n' "$output_html"
 printf 'sha256: %s\n' "$artifact_sha"

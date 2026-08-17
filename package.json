@@ -19,7 +19,7 @@
     "preview": "npm --workspace apps/web run preview",
     "preview:demo": "npm --workspace apps/web run preview:demo",
     "release:validate": "node bin/release/validate-release.mjs",
-    "test": "npm --workspace apps/web run test -- src ../../tests",
+    "test": "vitest run --root . --config apps/web/vite.config.ts apps/web/src tests",
     "lint": "npm --workspace apps/web run lint",
     "format": "npm --workspace apps/web run format",
     "type-check": "npm --workspace apps/web run type-check",
