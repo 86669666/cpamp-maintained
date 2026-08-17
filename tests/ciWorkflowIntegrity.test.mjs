@@ -52,7 +52,9 @@ describe('GitHub Actions workflow integrity', () => {
     const requiredJob = jobBlock(workflow, 'required');
 
     expect(releaseJob).toContain('name: Release Content');
-    expect(releaseJob).toContain('--changed-content --null');
+    expect(releaseJob).toContain('--changed-content');
+    expect(releaseJob).toContain('--repository-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"');
+    expect(releaseJob).toContain('--null < "${changed_files}"');
     expect(releaseJob).toContain('--diff-filter=A -z');
     expect(requiredJob).toContain('- release-content');
     expect(requiredJob).toContain("RELEASE_CONTENT_RESULT: ${{ needs['release-content'].result }}");
@@ -69,12 +71,7 @@ describe('GitHub Actions workflow integrity', () => {
 
   it('serializes every publishing stage behind release preflight', () => {
     const workflow = readWorkflow('release.yml');
-    for (const jobName of [
-      'build_release_assets',
-      'build_and_push_docker',
-      'publish_github_release',
-      'notify_telegram',
-    ]) {
+    for (const jobName of ['build_release_assets', 'publish_github_release', 'notify_telegram']) {
       const job = jobBlock(workflow, jobName);
       expect(
         /needs:\s*preflight|needs:[\s\S]*?\n\s+- preflight/.test(job),
@@ -83,12 +80,59 @@ describe('GitHub Actions workflow integrity', () => {
     }
   });
 
+  it('publishes the maintained lightweight artifact with complete provenance', () => {
+    const workflow = readWorkflow('release.yml');
+    const buildJob = jobBlock(workflow, 'build_release_assets');
+    const publishJob = jobBlock(workflow, 'publish_github_release');
+
+    expect(buildJob).toContain('scripts/build-maintained-lightweight.sh');
+    expect(buildJob).toContain('RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}');
+    expect(buildJob).toContain('DRY_RUN: ${{ needs.preflight.outputs.dry_run }}');
+    expect(buildJob).toContain('if [ "${DRY_RUN}" = "true" ]');
+    expect(buildJob).toContain('git tag --force "${RELEASE_TAG}" "${GITHUB_SHA}"');
+    expect(buildJob).toContain('git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"');
+    expect(buildJob).toContain('refs/tags/${RELEASE_TAG}^{commit}');
+    expect(buildJob).toContain('cp output-maintained/management.html dist/release/management.html');
+    expect(buildJob).toContain('cp output-maintained/metadata.json dist/release/metadata.json');
+    expect(buildJob).toContain('cp output-maintained/SOURCE_COMMIT dist/release/SOURCE_COMMIT');
+    expect(buildJob).toContain('cp output-maintained/SHA256SUMS dist/release/SHA256SUMS');
+    expect(buildJob).toContain('sha256sum -c SHA256SUMS');
+    expect(buildJob).toContain('test "$(find . -maxdepth 1 -type f \\( -name \'*.tar.gz\' -o -name \'*.zip\' \\) | wc -l)" -eq 6');
+    expect(buildJob).toContain('sha256sum -c checksums.txt');
+    expect(buildJob).not.toContain('find native -maxdepth 1 -type f -print0');
+    expect(buildJob).not.toContain('sha256sum release-notes.md >> SHA256SUMS');
+    expect(buildJob).not.toContain('cp apps/web/dist/index.html dist/release/management.html');
+
+    expect(publishJob).toContain('test -s dist/release/metadata.json');
+    expect(publishJob).toContain('test -s dist/release/SOURCE_COMMIT');
+    expect(publishJob).toContain('test -s dist/release/SHA256SUMS');
+    expect(publishJob).toContain('test -s dist/release/native/checksums.txt');
+    expect(publishJob).toContain('(cd dist/release && sha256sum -c SHA256SUMS)');
+    expect(publishJob).toContain('sha256sum -c checksums.txt');
+    expect(publishJob).toContain('git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"');
+    expect(publishJob).toContain('release_commit="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"');
+    expect(publishJob).toContain('test "${release_commit}" = "${GITHUB_SHA}"');
+    expect(publishJob).toContain('metadata["sourceHead"] == sys.argv[2]');
+    expect(publishJob).toContain('metadata["sourceTag"] == sys.argv[3]');
+    expect(publishJob).toContain('metadata["buildVersion"] == sys.argv[3]');
+    expect(publishJob).toContain('dist/release/metadata.json');
+    expect(publishJob).toContain('dist/release/SOURCE_COMMIT');
+    expect(publishJob).toContain('dist/release/SHA256SUMS');
+    expect(publishJob).toContain('dist/release/native/checksums.txt');
+  });
+
   it('exposes a serialized dry-run path and rejects legacy release-note fallback', () => {
     const workflow = readWorkflow('release.yml');
 
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain('version:');
     expect(workflow).toContain('dry_run=true');
+    expect(workflow).toContain('--maintained-branch');
+    expect(workflow).toContain('--repository-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"');
+    expect(workflow).not.toContain('+refs/heads/dev:refs/remotes/origin/dev');
+    expect(workflow).not.toContain('build_and_push_docker:');
+    expect(workflow).not.toContain('ghcr.io/seakee/cpa-manager-plus');
+    expect(workflow).not.toContain('DOCKERHUB_IMAGE: seakee/cpa-manager-plus');
     expect(workflow).toContain(
       "import { parseReleaseTag } from './bin/release/validate-release.mjs'"
     );

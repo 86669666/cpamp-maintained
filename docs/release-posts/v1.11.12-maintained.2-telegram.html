@@ -1,0 +1,12 @@
+<b>CPA Manager Plus v1.11.12-maintained.2</b>
+
+<b>更新内容</b>
+
+• 正式 Release 现在直接构建并发布受维护的 Lightweight 单文件面板，同时附带来源元数据、源码提交和 SHA-256 校验清单。
+• 构建与发布阶段都会重新核验远端标签、GitHub 提交和制品来源，防止标签移动或错误制品进入 Release。
+• 私有维护仓改用 main 单一发布源，不再依赖不存在的 dev 分支，也不再尝试写入上游 seakee 的 DockerHub/GHCR 命名空间。
+• 完整测试门禁覆盖 CPA/sub2api type=apikey 转换、插件 fail-closed、架构边界和发布工作流。
+
+<b>注意事项</b>
+
+• 本版本只收口维护仓的发布与证据链，不停止正在运行的 CPA Manager Plus Full Mode 服务。

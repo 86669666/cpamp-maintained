@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const repositoryUrl = 'https://github.com/seakee/CPA-Manager-Plus';
+const upstreamRepositoryUrl = 'https://github.com/seakee/CPA-Manager-Plus';
 const maximumTelegramCharacters = 3500;
 const prereleaseIdentifier = String.raw`(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)`;
 const releaseTagPattern = new RegExp(
@@ -25,7 +25,7 @@ const releasePaths = (tag) => ({
   telegram: `docs/release-posts/${tag}-telegram.html`,
 });
 
-const expectedLanguageLink = (tag, language) =>
+const expectedLanguageLink = (tag, language, repositoryUrl = upstreamRepositoryUrl) =>
   `${repositoryUrl}/blob/${tag}/docs/release-notes/${tag}-${language}.md`;
 
 const fail = (message) => {
@@ -114,13 +114,18 @@ export const validateTelegramHtml = (body) => {
   return { characters: Array.from(body).length };
 };
 
-export const validateReleaseNotes = ({ tag, chinese, english }) => {
+export const validateReleaseNotes = ({
+  tag,
+  chinese,
+  english,
+  repositoryUrl = upstreamRepositoryUrl,
+}) => {
   parseReleaseTag(tag);
   if (typeof chinese !== 'string' || chinese.trim() === '') fail('Chinese release notes are empty');
   if (typeof english !== 'string' || english.trim() === '') fail('English release notes are empty');
 
-  const englishLink = expectedLanguageLink(tag, 'en');
-  const chineseLink = expectedLanguageLink(tag, 'zh');
+  const englishLink = expectedLanguageLink(tag, 'en', repositoryUrl);
+  const chineseLink = expectedLanguageLink(tag, 'zh', repositoryUrl);
   if (!chinese.includes(englishLink)) fail(`Chinese release notes must link to ${englishLink}`);
   if (!english.includes(chineseLink)) fail(`English release notes must link to ${chineseLink}`);
   if (/\]\(\.\/?[^)]*release-notes/.test(chinese) || /\]\(\.\/?[^)]*release-notes/.test(english)) {
@@ -135,6 +140,7 @@ export const validateReleaseNotes = ({ tag, chinese, english }) => {
 
 export const validateReleaseContent = ({
   tag,
+  repositoryUrl = upstreamRepositoryUrl,
   readFile = (filePath) => readFileSync(filePath, 'utf8'),
   fileExists = (filePath) => existsSync(filePath),
 }) => {
@@ -150,7 +156,7 @@ export const validateReleaseContent = ({
   const telegram = readFile(path.resolve(repoRoot, paths.telegram));
   return {
     paths,
-    notes: validateReleaseNotes({ tag, chinese, english }),
+    notes: validateReleaseNotes({ tag, chinese, english, repositoryUrl }),
     telegram: validateTelegramHtml(telegram),
   };
 };
@@ -173,7 +179,12 @@ const releaseTagFromPath = (filePath) => {
   return null;
 };
 
-export const validateChangedReleaseContent = ({ changedFiles, readFile, fileExists }) => {
+export const validateChangedReleaseContent = ({
+  changedFiles,
+  repositoryUrl = upstreamRepositoryUrl,
+  readFile,
+  fileExists,
+}) => {
   const tags = [
     ...new Set(
       changedFiles
@@ -188,6 +199,7 @@ export const validateChangedReleaseContent = ({ changedFiles, readFile, fileExis
     releases: tags.map((tag) =>
       validateReleaseContent({
         tag,
+        repositoryUrl,
         ...(readFile ? { readFile } : {}),
         ...(fileExists ? { fileExists } : {}),
       })
@@ -275,13 +287,41 @@ export const validateReleaseTopology = ({
   };
 };
 
+export const validateMaintainedReleaseTopology = ({
+  tag,
+  sha,
+  mainRef = 'origin/main',
+  requireTagRef = true,
+  git = runGit,
+}) => {
+  parseReleaseTag(tag);
+  const candidateSha = sha || resolveCommit(git, 'HEAD');
+  const mainSha = resolveCommit(git, mainRef);
+
+  if (requireTagRef && resolveCommit(git, `refs/tags/${tag}`) !== candidateSha) {
+    fail(`Tag ${tag} does not point to the candidate release commit ${candidateSha}`);
+  }
+  if (candidateSha !== mainSha) {
+    fail(`Candidate ${candidateSha} is not the current ${mainRef} ${mainSha}`);
+  }
+
+  return { tag, candidateSha, mainSha };
+};
+
 const parseArguments = (argv) => {
-  const options = { contentOnly: false, dryRun: false, changedContent: false, null: false };
+  const options = {
+    contentOnly: false,
+    dryRun: false,
+    changedContent: false,
+    maintainedBranch: false,
+    null: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--content-only') options.contentOnly = true;
     else if (argument === '--dry-run') options.dryRun = true;
     else if (argument === '--changed-content') options.changedContent = true;
+    else if (argument === '--maintained-branch') options.maintainedBranch = true;
     else if (argument === '--null') options.null = true;
     else if (argument.startsWith('--')) {
       const key = argument.slice(2).replace(/-([a-z])/g, (_, character) => character.toUpperCase());
@@ -297,22 +337,35 @@ const runCli = () => {
     if (options.changedContent) {
       const input = readFileSync(0, 'utf8');
       const changedFiles = input.split(options.null ? '\0' : /\r?\n/).filter(Boolean);
-      const content = validateChangedReleaseContent({ changedFiles });
+      const content = validateChangedReleaseContent({
+        changedFiles,
+        ...(options.repositoryUrl ? { repositoryUrl: options.repositoryUrl } : {}),
+      });
       console.log(JSON.stringify({ ok: true, mode: 'changed-content', ...content }, null, 2));
       return;
     }
     if (options.null) fail('--null requires --changed-content');
     if (!options.tag) fail('--tag is required');
-    const content = validateReleaseContent({ tag: options.tag });
+    const content = validateReleaseContent({
+      tag: options.tag,
+      ...(options.repositoryUrl ? { repositoryUrl: options.repositoryUrl } : {}),
+    });
     const topology = options.contentOnly
       ? null
-      : validateReleaseTopology({
-          tag: options.tag,
-          sha: options.sha,
-          mainRef: options.mainRef || 'origin/main',
-          devRef: options.devRef || 'origin/dev',
-          requireTagRef: !options.dryRun,
-        });
+      : options.maintainedBranch
+        ? validateMaintainedReleaseTopology({
+            tag: options.tag,
+            sha: options.sha,
+            mainRef: options.mainRef || 'origin/main',
+            requireTagRef: !options.dryRun,
+          })
+        : validateReleaseTopology({
+            tag: options.tag,
+            sha: options.sha,
+            mainRef: options.mainRef || 'origin/main',
+            devRef: options.devRef || 'origin/dev',
+            requireTagRef: !options.dryRun,
+          });
     console.log(
       JSON.stringify(
         {

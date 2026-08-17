@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   parseReleaseTag,
   validateChangedReleaseContent,
+  validateMaintainedReleaseTopology,
   validateReleaseContent,
   validateReleaseNotes,
   validateReleaseTopology,
@@ -66,6 +67,30 @@ describe('release content validation', () => {
     ).toThrow('English release notes must link');
   });
 
+  it('accepts reciprocal tag-pinned links for the maintained repository', () => {
+    const repositoryUrl = 'https://github.com/86669666/cpamp-maintained';
+    const maintainedChinese = chineseNotes.replace(
+      'https://github.com/seakee/CPA-Manager-Plus',
+      repositoryUrl
+    );
+    const maintainedEnglish = englishNotes.replace(
+      'https://github.com/seakee/CPA-Manager-Plus',
+      repositoryUrl
+    );
+
+    expect(
+      validateReleaseNotes({
+        tag: releaseTag,
+        chinese: maintainedChinese,
+        english: maintainedEnglish,
+        repositoryUrl,
+      })
+    ).toMatchObject({
+      chineseCharacters: expect.any(Number),
+      englishCharacters: expect.any(Number),
+    });
+  });
+
   it('rejects unsupported Telegram markup and Markdown-only sections', () => {
     expect(validateTelegramHtml(telegramPost)).toEqual({ characters: expect.any(Number) });
     expect(validateTelegramHtml('<b>R&amp;D &#62; &#X3E; baseline</b>')).toEqual({
@@ -123,6 +148,26 @@ describe('release content validation', () => {
         fileExists,
       })
     ).toThrow('Unexpected release content path');
+  });
+
+  it('validates changed maintained release content against the maintained repository URL', () => {
+    const repositoryUrl = 'https://github.com/86669666/cpamp-maintained';
+    const contents = new Map([
+      [releasePaths.chinese, chineseNotes.replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl)],
+      [releasePaths.english, englishNotes.replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl)],
+      [releasePaths.telegram, telegramPost],
+    ]);
+    const readFile = (filePath) => contents.get(filePath.split('/').slice(-3).join('/'));
+    const fileExists = (filePath) => contents.has(filePath.split('/').slice(-3).join('/'));
+
+    expect(
+      validateChangedReleaseContent({
+        changedFiles: Object.values(releasePaths),
+        repositoryUrl,
+        readFile,
+        fileExists,
+      })
+    ).toMatchObject({ tags: [releaseTag] });
   });
 });
 
@@ -237,5 +282,65 @@ describe('release topology validation', () => {
     } finally {
       rmSync(repository, { recursive: true, force: true });
     }
+  });
+});
+
+describe('maintained release topology validation', () => {
+  it('accepts a tag on the current maintained main commit without a dev branch', () => {
+    const mainSha = 'a'.repeat(40);
+    const git = (args) => {
+      if (args[0] === 'rev-parse' && args[2] === 'origin/main^{commit}') return mainSha;
+      if (args[0] === 'rev-parse' && args[2] === 'refs/tags/v1.2.3^{commit}') return mainSha;
+      throw new Error(`Unexpected git call: ${args.join(' ')}`);
+    };
+
+    expect(
+      validateMaintainedReleaseTopology({ tag: releaseTag, sha: mainSha, git })
+    ).toEqual({ tag: releaseTag, candidateSha: mainSha, mainSha });
+  });
+
+  it('rejects a maintained candidate that is not the current main commit', () => {
+    const mainSha = 'a'.repeat(40);
+    const candidateSha = 'b'.repeat(40);
+    const git = (args) => {
+      if (args[0] === 'rev-parse' && args[2] === 'origin/main^{commit}') return mainSha;
+      if (args[0] === 'rev-parse' && args[2] === 'refs/tags/v1.2.3^{commit}') return candidateSha;
+      throw new Error(`Unexpected git call: ${args.join(' ')}`);
+    };
+
+    expect(() =>
+      validateMaintainedReleaseTopology({ tag: releaseTag, sha: candidateSha, git })
+    ).toThrow('not the current origin/main');
+  });
+
+  it('rejects a maintained tag that does not point to the candidate commit', () => {
+    const mainSha = 'a'.repeat(40);
+    const otherSha = 'b'.repeat(40);
+    const git = (args) => {
+      if (args[0] === 'rev-parse' && args[2] === 'origin/main^{commit}') return mainSha;
+      if (args[0] === 'rev-parse' && args[2] === 'refs/tags/v1.2.3^{commit}') return otherSha;
+      throw new Error(`Unexpected git call: ${args.join(' ')}`);
+    };
+
+    expect(() =>
+      validateMaintainedReleaseTopology({ tag: releaseTag, sha: mainSha, git })
+    ).toThrow('does not point to the candidate');
+  });
+
+  it('allows dry-run validation without a pre-existing tag', () => {
+    const mainSha = 'a'.repeat(40);
+    const git = (args) => {
+      if (args[0] === 'rev-parse' && args[2] === 'origin/main^{commit}') return mainSha;
+      throw new Error(`Unexpected git call: ${args.join(' ')}`);
+    };
+
+    expect(
+      validateMaintainedReleaseTopology({
+        tag: releaseTag,
+        sha: mainSha,
+        requireTagRef: false,
+        git,
+      })
+    ).toEqual({ tag: releaseTag, candidateSha: mainSha, mainSha });
   });
 });

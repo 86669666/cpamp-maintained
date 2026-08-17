@@ -77,11 +77,7 @@ jobs:
           echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
 
       - name: Fetch protected branch refs
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin \
-            +refs/heads/main:refs/remotes/origin/main \
-            +refs/heads/dev:refs/remotes/origin/dev
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
 
       - name: Validate release content and provenance
         env:
@@ -94,7 +90,8 @@ jobs:
             --tag "${RELEASE_TAG}"
             --sha "${RELEASE_SHA}"
             --main-ref origin/main
-            --dev-ref origin/dev
+            --maintained-branch
+            --repository-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
           )
           if [ "${DRY_RUN}" = "true" ]; then
             validation_args+=(--dry-run)
@@ -109,6 +106,7 @@ jobs:
       contents: read
     env:
       RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
+      DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
 
     steps:
       - name: Checkout release source
@@ -132,10 +130,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build all-in-one HTML
-        run: npm run build
-        env:
-          VERSION: ${{ needs.preflight.outputs.release_tag }}
+      - name: Build maintained lightweight artifact
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN}" = "true" ]; then
+            git tag --force "${RELEASE_TAG}" "${GITHUB_SHA}"
+          else
+            git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+            test "$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")" = "${GITHUB_SHA}"
+          fi
+          scripts/build-maintained-lightweight.sh
 
       - name: Check demo isolation
         run: npm run check:demo-isolation
@@ -150,9 +154,18 @@ jobs:
           set -euo pipefail
           rm -rf dist/release
           mkdir -p dist/release/native
-          cp apps/web/dist/index.html dist/release/management.html
+          cp output-maintained/management.html dist/release/management.html
+          cp output-maintained/metadata.json dist/release/metadata.json
+          cp output-maintained/SOURCE_COMMIT dist/release/SOURCE_COMMIT
+          cp output-maintained/SHA256SUMS dist/release/SHA256SUMS
           cp dist/native/* dist/release/native/
           cp "docs/release-notes/${RELEASE_TAG}-zh.md" dist/release/release-notes.md
+          (cd dist/release && sha256sum -c SHA256SUMS)
+          (
+            cd dist/release/native
+            test "$(find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 6
+            sha256sum -c checksums.txt
+          )
           find dist/release -maxdepth 2 -type f -print | sort
 
       - name: Upload release artifact
@@ -163,123 +176,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  build_and_push_docker:
-    name: Build and publish Docker images
-    needs:
-      - preflight
-      - build_release_assets
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    env:
-      RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}
-      DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
-      DOCKERHUB_IMAGE: seakee/cpa-manager-plus
-      GHCR_IMAGE: ghcr.io/seakee/cpa-manager-plus
-
-    steps:
-      - name: Checkout release source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      - name: Prepare Docker publish targets
-        id: docker_targets
-        shell: bash
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [ "${DOCKERHUB_IMAGE}" != "seakee/cpa-manager-plus" ]; then
-            echo "Docker image name must be seakee/cpa-manager-plus" >&2
-            exit 1
-          fi
-
-          images="${GHCR_IMAGE}"
-          dockerhub_enabled=false
-          if [ "${DRY_RUN}" != "true" ] && [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
-            images="${images}"$'\n'"${DOCKERHUB_IMAGE}"
-            dockerhub_enabled=true
-          elif [ "${DRY_RUN}" != "true" ]; then
-            echo "::warning::DockerHub credentials are not both configured; DockerHub publish will be skipped."
-          fi
-
-          {
-            echo "images<<EOF"
-            echo "${images}"
-            echo "EOF"
-            echo "dockerhub_enabled=${dockerhub_enabled}"
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Login to GitHub Container Registry
-        if: env.DRY_RUN != 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Login to Docker Hub
-        if: env.DRY_RUN != 'true' && steps.docker_targets.outputs.dockerhub_enabled == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ${{ steps.docker_targets.outputs.images }}
-          tags: |
-            type=raw,value=${{ env.RELEASE_TAG }}
-            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ needs.preflight.outputs.prerelease == 'false' }}
-            type=raw,value=latest,enable=${{ needs.preflight.outputs.prerelease == 'false' }}
-          labels: |
-            org.opencontainers.image.title=CPA Manager Plus
-            org.opencontainers.image.description=CPA Manager Plus Manager Server container image
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.documentation=${{ github.server_url }}/${{ github.repository }}#readme
-
-      - name: Build and publish Manager Server image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: Dockerfile.manager-server
-          platforms: linux/amd64,linux/arm64
-          push: ${{ env.DRY_RUN != 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ env.RELEASE_TAG }}
-
-      - name: Update DockerHub overview
-        if: env.DRY_RUN != 'true' && steps.docker_targets.outputs.dockerhub_enabled == 'true'
-        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ env.DOCKERHUB_IMAGE }}
-          short-description: CPA Manager Plus with Dockerized Manager Server
-          readme-filepath: ./README.md
-
   publish_github_release:
     name: Publish GitHub Release
     needs:
       - preflight
       - build_release_assets
-      - build_and_push_docker
     if: needs.preflight.outputs.dry_run != 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -302,9 +203,33 @@ jobs:
       - name: Verify downloaded release artifact
         run: |
           set -euo pipefail
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          release_commit="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          test "${release_commit}" = "${GITHUB_SHA}"
           test -s dist/release/management.html
+          test -s dist/release/metadata.json
+          test -s dist/release/SOURCE_COMMIT
+          test -s dist/release/SHA256SUMS
           test -s dist/release/release-notes.md
-          test -n "$(find dist/release/native -type f -maxdepth 1 -print -quit)"
+          test -s dist/release/native/checksums.txt
+          (cd dist/release && sha256sum -c SHA256SUMS)
+          (
+            cd dist/release/native
+            test "$(find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" -eq 6
+            sha256sum -c checksums.txt
+          )
+          test "$(tr -d '\r\n' < dist/release/SOURCE_COMMIT)" = "${release_commit}"
+          python3 - "dist/release/metadata.json" "${release_commit}" "${RELEASE_TAG}" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              metadata = json.load(handle)
+          assert metadata["sourceHead"] == sys.argv[2]
+          assert metadata["sourceTag"] == sys.argv[3]
+          assert metadata["buildVersion"] == sys.argv[3]
+          assert metadata["dirtyWorktreeAllowed"] is False
+          PY
 
       - name: Create Release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
@@ -312,6 +237,9 @@ jobs:
           tag_name: ${{ needs.preflight.outputs.release_tag }}
           files: |
             dist/release/management.html
+            dist/release/metadata.json
+            dist/release/SOURCE_COMMIT
+            dist/release/SHA256SUMS
             dist/release/native/*
           body_path: dist/release/release-notes.md
           draft: false

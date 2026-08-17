@@ -16,6 +16,13 @@ without weakening the technical notes.
 
 ## Release Branch Flow
 
+The maintained private fork uses a deliberately narrower release topology than
+the public upstream. Its current `main` is the single source branch and a
+release tag must point to the exact current `main` commit. The historical
+upstream `release/<version> -> dev -> main` flow below remains documented for
+upstream contribution work, but `.github/workflows/release.yml` invokes the
+validator with `--maintained-branch` and does not require a local `dev` ref.
+
 `main` is the stable default branch. `dev` is the integration branch. Every
 release follows this sequence:
 
@@ -173,20 +180,20 @@ The PR workflow automatically validates newly added versioned files under
 `Required checks` aggregate. The three files for each new release tag must
 exist and satisfy the same content rules used by release preflight.
 
-The preflight validates all of the following before building or publishing:
+For this maintained fork, preflight validates all of the following before
+building or publishing:
 
 - `docs/release-notes/<tag>-zh.md`, `docs/release-notes/<tag>-en.md`, and
   `docs/release-posts/<tag>-telegram.html` exist and are non-empty;
 - the two release notes contain reciprocal tag-pinned GitHub blob links;
 - the candidate SHA is the current `main` tip;
-- `main` is a two-parent `dev -> main` promotion merge, and `dev` is the
-  two-parent release-PR merge;
-- the final `main` tree exactly matches the promoted `dev` tree;
-- the release merge introduces exactly the three versioned release files and
-  no unrelated changes.
+- for a real tag run, the immutable tag resolves to that exact candidate SHA;
+- dry-run validation may use a synthetic local tag, but it never publishes;
+- the maintained single-file artifact is built from a clean checkout and
+  records the exact source commit, tag, build version, and checksums.
 
 There is no commit-log or previous-tag fallback. A missing note or post stops
-the workflow before any asset or container publishing. Run the validator
+the workflow before any asset publishing. Run the validator
 locally with:
 
 ```bash
@@ -195,16 +202,17 @@ npm run release:validate -- --tag v1.2.3 --content-only
 
 For a complete topology check, provide the candidate SHA and fetched protected
 refs. The workflow's `workflow_dispatch` path performs this same validation in
-dry-run mode and may only be dispatched from `main`; it builds the HTML,
-native packages, and Docker image with publishing disabled, while skipping
-GitHub Release and Telegram delivery.
+dry-run mode and may only be dispatched from `main`; it builds the HTML and
+native packages with publishing disabled, while skipping GitHub Release and
+Telegram delivery.
 
 Release jobs share a non-canceling `release-publish` concurrency group, so two
 tags cannot publish concurrently. Assets are uploaded as an Actions artifact
 and reused by the GitHub Release job, which prevents a second build from
-silently producing a different release payload. DockerHub publishing is
-optional when its credentials are absent; GHCR remains the configured image
-registry for normal tag runs.
+silently producing a different release payload. This private maintained fork
+does not publish container images from its Release workflow: it must not write
+to the upstream `seakee` DockerHub or GHCR namespaces. Container publishing, if
+introduced later, requires an explicitly owned namespace and a separate review.
 
 Telegram delivery is deliberately non-blocking after the GitHub Release is
 created. The job summary records `sent`, `skipped-config`,
@@ -218,9 +226,8 @@ Recovery rules:
    PR/promotion as needed, and rerun the dry-run before creating a tag.
 2. If a tagged run fails because the immutable source is invalid, fix it under
    a new version and create a new tag; never move the failed tag. For a transient
-   asset or Docker failure, rerun the same immutable tag only after checking
-   which registry or artifact stage already succeeded. Publishing across
-   registries is deterministic but not transactional.
+   asset failure, rerun the same immutable tag only after checking which
+   artifact stage already succeeded.
 3. If GitHub Release succeeds and Telegram fails, repair the secret/post or
    retry the workflow and verify the job summary; the release itself remains
    valid.
