@@ -22,9 +22,22 @@ const (
 )
 
 type Response struct {
-	Config   store.ManagerConfig `json:"config"`
+	Config   PublicManagerConfig `json:"config"`
 	Source   string              `json:"source"`
 	CPAUsage *cpa.UsageConfig    `json:"cpaUsage,omitempty"`
+}
+
+type PublicManagerConfig struct {
+	CPAConnection        PublicManagerCPAConnectionConfig        `json:"cpaConnection"`
+	Collector            store.ManagerCollectorConfig            `json:"collector"`
+	CodexInspection      store.ManagerCodexInspectionConfig      `json:"codexInspection"`
+	ExternalUsageService store.ManagerExternalUsageServiceConfig `json:"externalUsageService"`
+	UpdatedAtMS          int64                                   `json:"updatedAtMs,omitempty"`
+}
+
+type PublicManagerCPAConnectionConfig struct {
+	CPABaseURL              string `json:"cpaBaseUrl"`
+	ManagementKeyConfigured bool   `json:"managementKeyConfigured"`
 }
 
 type Service struct {
@@ -57,7 +70,7 @@ func (s *Service) Get(ctx context.Context) (Response, error) {
 		}
 	}
 	return Response{
-		Config:   cfg,
+		Config:   PublicConfig(cfg),
 		Source:   string(source),
 		CPAUsage: cpaUsage,
 	}, nil
@@ -113,15 +126,12 @@ func (s *Service) Update(ctx context.Context, submitted store.ManagerConfig) (Re
 		}
 		_ = s.collector.Stop(context.Background())
 		return Response{
-			Config: next,
+			Config: PublicConfig(next),
 			Source: string(SourceDB),
 		}, nil
 	}
-	if err := s.store.SaveManagerConfig(ctx, next); err != nil {
-		return Response{}, err
-	}
 	setup := SetupFromManagerConfig(next)
-	if err := s.store.SaveSetup(ctx, setup); err != nil {
+	if err := s.store.SaveManagerConfigAndSetup(ctx, next, setup); err != nil {
 		return Response{}, err
 	}
 	if ManagerCollectorEnabled(next) {
@@ -130,7 +140,7 @@ func (s *Service) Update(ctx context.Context, submitted store.ManagerConfig) (Re
 		_ = s.collector.Stop(context.Background())
 	}
 	return Response{
-		Config: next,
+		Config: PublicConfig(next),
 		Source: string(SourceDB),
 	}, nil
 }
@@ -222,8 +232,10 @@ func (s *Service) DefaultManagerConfig() store.ManagerConfig {
 func (s *Service) MergeSubmittedManagerConfig(base store.ManagerConfig, submitted store.ManagerConfig) store.ManagerConfig {
 	next := base
 
-	if submitted.CPAConnection.CPABaseURL != "" || submitted.CPAConnection.ManagementKey != "" {
+	if strings.TrimSpace(submitted.CPAConnection.CPABaseURL) != "" {
 		next.CPAConnection.CPABaseURL = cpa.NormalizeBaseURL(submitted.CPAConnection.CPABaseURL)
+	}
+	if strings.TrimSpace(submitted.CPAConnection.ManagementKey) != "" {
 		next.CPAConnection.ManagementKey = strings.TrimSpace(submitted.CPAConnection.ManagementKey)
 	}
 
@@ -244,6 +256,19 @@ func (s *Service) MergeSubmittedManagerConfig(base store.ManagerConfig, submitte
 	next.ExternalUsageService.ServiceBase = ""
 
 	return next
+}
+
+func PublicConfig(cfg store.ManagerConfig) PublicManagerConfig {
+	return PublicManagerConfig{
+		CPAConnection: PublicManagerCPAConnectionConfig{
+			CPABaseURL:              cfg.CPAConnection.CPABaseURL,
+			ManagementKeyConfigured: strings.TrimSpace(cfg.CPAConnection.ManagementKey) != "",
+		},
+		Collector:            cfg.Collector,
+		CodexInspection:      cfg.CodexInspection,
+		ExternalUsageService: cfg.ExternalUsageService,
+		UpdatedAtMS:          cfg.UpdatedAtMS,
+	}
 }
 
 func SetupFromManagerConfig(cfg store.ManagerConfig) store.Setup {

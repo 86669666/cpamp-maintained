@@ -17,6 +17,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/adminreset"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/cpaconnection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/command/derivedmaintenance"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/httpapi"
@@ -43,6 +44,12 @@ func main() {
 			defer stop()
 			if err := derivedmaintenance.Run(ctx, os.Args[2:], os.Stdout, os.Stderr); err != nil {
 				log.Printf("cleanup derived data: %v", err)
+				os.Exit(1)
+			}
+			return
+		case "store-cpa-connection":
+			if err := cpaconnection.Run(context.Background(), os.Args[2:], os.Stdout, os.Stderr); err != nil {
+				log.Printf("store CPA connection: %v", err)
 				os.Exit(1)
 			}
 			return
