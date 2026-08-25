@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
+	monitoringsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/monitoring"
+	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
 )
@@ -265,6 +268,279 @@ func TestManagerOnlyPassesInsertedEventsToHandler(t *testing.T) {
 	}
 	if handler.events[0].EventHash == duplicateEvent.EventHash || handler.events[0].FailStatusCode == http.StatusTooManyRequests {
 		t.Fatalf("duplicate quota event was passed to handler: %#v", handler.events[0])
+	}
+}
+
+func TestManagerPersistsQuotaEvidenceAfterUsageInsert(t *testing.T) {
+	db := newTestStore(t)
+	manager := NewManager(testConfig(t, "http"), db)
+	payload := `{
+		"request_id":"quota-header",
+		"timestamp":"2026-05-06T00:00:00Z",
+		"provider":"codex",
+		"model":"gpt-test",
+		"endpoint":"POST /v1/responses",
+		"auth_file_snapshot":"codex.json",
+		"auth_provider_snapshot":"codex",
+		"auth_index":"auth-1",
+		"account_snapshot":"user@example.com",
+		"response_headers":{
+			"X-Codex-Primary-Used-Percent":["40"],
+			"X-Codex-Primary-Reset-After-Seconds":["18000"],
+			"X-Codex-Primary-Window-Minutes":["300"]
+		}
+	}`
+	if err := manager.processItems(context.Background(), RuntimeConfig{}, []string{payload}); err != nil {
+		t.Fatalf("process quota event: %v", err)
+	}
+	query, err := quotasnapshotsvc.New(db).Query(context.Background(), quotasnapshotsvc.QueryRequest{
+		Accounts: []quotasnapshotsvc.QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotasnapshotsvc.AccountTarget{
+				AuthFileSnapshot: "codex.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-1",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("query quota snapshots: %v", err)
+	}
+	if len(query.Items) != 1 || len(query.Items[0].Windows) != 1 {
+		t.Fatalf("quota snapshots = %#v", query)
+	}
+	window := query.Items[0].Windows[0]
+	if window.ProviderWindowID != "five-hour" || window.Source != "response_header" {
+		t.Fatalf("quota window = %#v", window)
+	}
+}
+
+func TestManagerKeepsFirstUsageInCurrentWindowWhenHeaderBoundaryDrifts(t *testing.T) {
+	const (
+		firstObservedAtMS  = int64(1_785_928_574_638)
+		secondObservedAtMS = int64(1_785_928_787_294)
+		firstCycleStartMS  = int64(1_785_928_573_000)
+		firstCycleEndMS    = int64(1_788_520_573_000)
+		durationMS         = int64(30 * 24 * 60 * 60 * 1000)
+	)
+	db := newTestStore(t)
+	manager := NewManager(testConfig(t, "http"), db)
+	payloads := []string{
+		`{
+			"request_id":"quota-first-use",
+			"timestamp":"2026-08-05T11:16:14.638Z",
+			"provider":"codex",
+			"model":"gpt-5.6-terra",
+			"endpoint":"POST /v1/responses",
+			"auth_file_snapshot":"codex-free.json",
+			"auth_provider_snapshot":"codex",
+			"auth_index":"auth-first-use",
+			"account_snapshot":"first-use@example.com",
+			"input_tokens":2500,
+			"output_tokens":21,
+			"response_headers":{
+				"X-Codex-Primary-Used-Percent":["0"],
+				"X-Codex-Primary-Reset-At":["1788520573000"],
+				"X-Codex-Primary-Reset-After-Seconds":["2592000"],
+				"X-Codex-Primary-Window-Minutes":["43200"],
+				"X-Codex-Secondary-Used-Percent":["0"],
+				"X-Codex-Secondary-Reset-After-Seconds":["0"],
+				"X-Codex-Secondary-Window-Minutes":["0"]
+			}
+		}`,
+		`{
+			"request_id":"quota-second-use",
+			"timestamp":"2026-08-05T11:19:47.294Z",
+			"provider":"codex",
+			"model":"gpt-5.6-terra",
+			"endpoint":"POST /v1/responses",
+			"auth_file_snapshot":"codex-free.json",
+			"auth_provider_snapshot":"codex",
+			"auth_index":"auth-first-use",
+			"account_snapshot":"first-use@example.com",
+			"input_tokens":1000,
+			"output_tokens":24,
+			"response_headers":{
+				"X-Codex-Primary-Used-Percent":["0"],
+				"X-Codex-Primary-Reset-At":["1788520580000"],
+				"X-Codex-Primary-Reset-After-Seconds":["2591796"],
+				"X-Codex-Primary-Window-Minutes":["43200"],
+				"X-Codex-Secondary-Used-Percent":["0"],
+				"X-Codex-Secondary-Reset-After-Seconds":["0"],
+				"X-Codex-Secondary-Window-Minutes":["0"]
+			}
+		}`,
+	}
+	if err := manager.processItems(context.Background(), RuntimeConfig{}, payloads); err != nil {
+		t.Fatalf("process first-use quota events: %v", err)
+	}
+
+	account := quotasnapshotsvc.AccountTarget{
+		AuthFileSnapshot: "codex-free.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-first-use",
+	}
+	query, err := quotasnapshotsvc.New(db).Query(context.Background(), quotasnapshotsvc.QueryRequest{
+		NowMS: secondObservedAtMS + 1_000,
+		Accounts: []quotasnapshotsvc.QueryAccount{{
+			RowKey: "row-first-use", Provider: "codex", Account: account,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("query first-use quota snapshots: %v", err)
+	}
+	if len(query.Items) != 1 || len(query.Items[0].Windows) != 1 {
+		t.Fatalf("quota snapshots = %#v", query)
+	}
+	window := query.Items[0].Windows[0]
+	if window.ProviderWindowID != "monthly" || window.CycleStartMS == nil || *window.CycleStartMS != firstCycleStartMS {
+		t.Fatalf("stabilized quota window = %#v", window)
+	}
+
+	usageResult, err := monitoringsvc.New(db).AccountWindowUsage(context.Background(), monitoringsvc.AccountWindowUsageRequest{
+		Windows: []monitoringsvc.AccountWindowUsageTarget{
+			{
+				RequestKey: "current", RowKey: "row-first-use", ProviderWindowID: "monthly", Period: "current",
+				FromMS: firstCycleStartMS, ToMS: secondObservedAtMS + 1_000,
+				ModelScope:           monitoringsvc.AccountWindowModelScope{Kind: "all"},
+				AccountSnapshot:      "first-use@example.com",
+				AuthFileSnapshot:     account.AuthFileSnapshot,
+				AuthProviderSnapshot: account.AuthProviderSnapshot,
+				AuthIndex:            account.AuthIndex,
+			},
+			{
+				RequestKey: "previous", RowKey: "row-first-use", ProviderWindowID: "monthly", Period: "previous",
+				FromMS: firstCycleStartMS - durationMS, ToMS: firstCycleStartMS,
+				ModelScope:           monitoringsvc.AccountWindowModelScope{Kind: "all"},
+				AccountSnapshot:      "first-use@example.com",
+				AuthFileSnapshot:     account.AuthFileSnapshot,
+				AuthProviderSnapshot: account.AuthProviderSnapshot,
+				AuthIndex:            account.AuthIndex,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("query first-use window usage: %v", err)
+	}
+	if len(usageResult.Items) != 2 {
+		t.Fatalf("window usage = %#v", usageResult)
+	}
+	current, previous := usageResult.Items[0], usageResult.Items[1]
+	if !current.Matched || current.TotalRequests != 2 || current.TotalTokens != 3_545 {
+		t.Fatalf("current window usage = %#v", current)
+	}
+	if previous.Matched || previous.TotalRequests != 0 || previous.TotalTokens != 0 {
+		t.Fatalf("previous window usage = %#v", previous)
+	}
+	if firstCycleEndMS-firstCycleStartMS != durationMS || firstObservedAtMS < firstCycleStartMS {
+		t.Fatal("invalid first-use test fixture")
+	}
+}
+
+func TestManagerAssignsFirstEarlyResetRequestToNewWindow(t *testing.T) {
+	const (
+		oldRequestAtMS   = int64(1_785_900_000_000)
+		firstRequestAtMS = int64(1_785_928_574_638)
+		providerStartMS  = int64(1_785_928_600_000)
+		durationMS       = int64(7 * 24 * 60 * 60 * 1000)
+	)
+	db := newTestStore(t)
+	manager := NewManager(testConfig(t, "http"), db)
+	oldResetAtMS := oldRequestAtMS + durationMS
+	providerResetAtMS := providerStartMS + durationMS
+	payloads := []string{
+		fmt.Sprintf(`{
+			"request_id":"quota-before-early-reset",
+			"timestamp":"%s",
+			"provider":"codex",
+			"model":"gpt-5.6-terra",
+			"endpoint":"POST /v1/responses",
+			"auth_file_snapshot":"codex-early-reset.json",
+			"auth_provider_snapshot":"codex",
+			"auth_index":"auth-early-reset",
+			"account_snapshot":"early-reset@example.com",
+			"input_tokens":100,
+			"output_tokens":10,
+			"response_headers":{
+				"X-Codex-Primary-Used-Percent":["4"],
+				"X-Codex-Primary-Reset-At":["%d"],
+				"X-Codex-Primary-Window-Minutes":["10080"]
+			}
+		}`, time.UnixMilli(oldRequestAtMS).UTC().Format(time.RFC3339Nano), oldResetAtMS),
+		fmt.Sprintf(`{
+			"request_id":"quota-first-early-reset-use",
+			"timestamp":"%s",
+			"provider":"codex",
+			"model":"gpt-5.6-terra",
+			"endpoint":"POST /v1/responses",
+			"auth_file_snapshot":"codex-early-reset.json",
+			"auth_provider_snapshot":"codex",
+			"auth_index":"auth-early-reset",
+			"account_snapshot":"early-reset@example.com",
+			"input_tokens":2500,
+			"output_tokens":21,
+			"response_headers":{
+				"X-Codex-Primary-Used-Percent":["0"],
+				"X-Codex-Primary-Reset-At":["%d"],
+				"X-Codex-Primary-Window-Minutes":["10080"]
+			}
+		}`, time.UnixMilli(firstRequestAtMS).UTC().Format(time.RFC3339Nano), providerResetAtMS),
+	}
+	if err := manager.processItems(context.Background(), RuntimeConfig{}, payloads); err != nil {
+		t.Fatalf("process early-reset quota events: %v", err)
+	}
+
+	account := quotasnapshotsvc.AccountTarget{
+		AuthFileSnapshot: "codex-early-reset.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-early-reset",
+	}
+	query, err := quotasnapshotsvc.New(db).Query(context.Background(), quotasnapshotsvc.QueryRequest{
+		NowMS: firstRequestAtMS + 1_000,
+		Accounts: []quotasnapshotsvc.QueryAccount{{
+			RowKey: "row-early-reset", Provider: "codex", Account: account,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("query early-reset quota snapshots: %v", err)
+	}
+	if len(query.Items) != 1 || len(query.Items[0].Windows) != 1 {
+		t.Fatalf("early-reset quota snapshots = %#v", query)
+	}
+	window := query.Items[0].Windows[0]
+	if window.CurrentCycle == nil || window.CurrentCycle.ActualStartMS != firstRequestAtMS ||
+		window.PreviousCycle == nil || window.PreviousCycle.ActualEndMS == nil ||
+		*window.PreviousCycle.ActualEndMS != firstRequestAtMS {
+		t.Fatalf("early-reset lifecycle = %#v", window)
+	}
+
+	usageResult, err := monitoringsvc.New(db).AccountWindowUsage(context.Background(), monitoringsvc.AccountWindowUsageRequest{
+		Windows: []monitoringsvc.AccountWindowUsageTarget{
+			{
+				RequestKey: "current", RowKey: "row-early-reset", ProviderWindowID: "weekly", Period: "current",
+				FromMS: firstRequestAtMS, ToMS: firstRequestAtMS + 1_000,
+				ModelScope:           monitoringsvc.AccountWindowModelScope{Kind: "all"},
+				AccountSnapshot:      "early-reset@example.com",
+				AuthFileSnapshot:     account.AuthFileSnapshot,
+				AuthProviderSnapshot: account.AuthProviderSnapshot,
+				AuthIndex:            account.AuthIndex,
+			},
+			{
+				RequestKey: "previous", RowKey: "row-early-reset", ProviderWindowID: "weekly", Period: "previous",
+				FromMS: oldRequestAtMS - 1_000, ToMS: firstRequestAtMS,
+				ModelScope:           monitoringsvc.AccountWindowModelScope{Kind: "all"},
+				AccountSnapshot:      "early-reset@example.com",
+				AuthFileSnapshot:     account.AuthFileSnapshot,
+				AuthProviderSnapshot: account.AuthProviderSnapshot,
+				AuthIndex:            account.AuthIndex,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("query early-reset window usage: %v", err)
+	}
+	if len(usageResult.Items) != 2 {
+		t.Fatalf("early-reset window usage = %#v", usageResult)
+	}
+	current, previous := usageResult.Items[0], usageResult.Items[1]
+	if !current.Matched || current.TotalRequests != 1 || current.TotalTokens != 2_521 {
+		t.Fatalf("current early-reset usage = %#v", current)
+	}
+	if !previous.Matched || previous.TotalRequests != 1 || previous.TotalTokens != 110 {
+		t.Fatalf("previous early-reset usage = %#v", previous)
 	}
 }
 

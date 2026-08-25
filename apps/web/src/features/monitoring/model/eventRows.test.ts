@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildRealtimeSourceDisplay } from '@/features/monitoring/realtimeSourceDisplay';
+import type { MonitoringAuthMeta } from './types';
 import type { ModelPrice, UsageDetailWithEndpoint } from '@/utils/usage';
 import { buildSourceInfoMap } from '@/utils/sourceResolver';
 import { buildEventRows } from './eventRows';
@@ -39,6 +40,83 @@ const buildRows = (
   );
 
 describe('buildEventRows', () => {
+  it('preserves persisted account identity fields before display enrichment', () => {
+    const [row] = buildRows({
+      account_snapshot: '',
+      auth_label_snapshot: 'Shared Label',
+      auth_provider_snapshot: '',
+      provider: 'antigravity',
+    });
+
+    expect(row.accountIdentity).toBe('');
+    expect(row.authLabelIdentity).toBe('Shared Label');
+    expect(row.authIndexIdentity).toBe('auth-1');
+    expect(row.sourceIdentity).toBe('alice@example.com');
+    expect(row.providerIdentity).toBe('antigravity');
+    expect(row.provider).toBe('antigravity');
+  });
+
+  it('keeps providerIdentity empty when only display metadata has a provider', () => {
+    const authMetaMap = new Map<string, MonitoringAuthMeta>([
+      [
+        'auth-1',
+        {
+          authIndex: 'auth-1',
+          label: 'Codex Label',
+          account: 'codex@example.com',
+          provider: 'codex',
+          status: 'active',
+          disabled: false,
+          unavailable: false,
+          runtimeOnly: false,
+          planType: '',
+          updatedAt: '',
+        },
+      ],
+    ]);
+
+    const [row] = buildEventRows(
+      [
+        {
+          timestamp: '2026-05-19T10:00:00Z',
+          source: 'alice@example.com',
+          auth_index: 'auth-1',
+          latency_ms: 1500,
+          ttft_ms: 500,
+          tokens: { input_tokens: 10, output_tokens: 20, total_tokens: 30 },
+          failed: false,
+          __modelName: 'gpt-5.4',
+          __endpoint: 'POST /v1/chat/completions',
+          __endpointMethod: 'POST',
+          __endpointPath: '/v1/chat/completions',
+          __timestampMs: Date.parse('2026-05-19T10:00:00Z'),
+          account_snapshot: '',
+          auth_provider_snapshot: '',
+          provider: '',
+        },
+      ],
+      authMetaMap,
+      new Map(),
+      { byAuthIndex: new Map(), bySource: new Map(), byIdentityKey: new Map() },
+      new Map(),
+      {},
+      new Map()
+    );
+
+    expect(row.providerIdentity).toBe('');
+    expect(row.provider).toBe('codex');
+  });
+
+  it('uses event provider for providerIdentity when snapshot is empty', () => {
+    const [row] = buildRows({
+      account_snapshot: '',
+      auth_provider_snapshot: '',
+      provider: 'antigravity',
+    });
+
+    expect(row.providerIdentity).toBe('antigravity');
+  });
+
   it('calculates tokens per second from total latency', () => {
     const [row] = buildRows();
 
@@ -102,6 +180,35 @@ describe('buildEventRows', () => {
     expect(row.searchText).toContain('priority');
     expect(row.searchText).toContain('default');
     expect(row.searchText).toContain('medium');
+  });
+
+  it('uses the analytics model as primary identity while keeping requested and resolved models searchable', () => {
+    const [row] = buildRows({
+      __modelName: 'deepseek-v4-flash',
+      __requestedModel: 'deepseek-v4-flash(max)',
+      __resolvedModel: 'resolved-deepseek-v4-flash',
+    });
+
+    expect(row.model).toBe('deepseek-v4-flash');
+    expect(row.requestedModel).toBe('deepseek-v4-flash(max)');
+    expect(row.resolvedModel).toBe('resolved-deepseek-v4-flash');
+    expect(row.searchText).toContain('deepseek-v4-flash(max)');
+    expect(row.searchText).toContain('resolved-deepseek-v4-flash');
+  });
+
+  it('keeps downstream request metadata searchable', () => {
+    const [row] = buildRows({
+      client_ip: '192.0.2.10',
+      x_forwarded_for: '203.0.113.5, 198.51.100.8',
+      user_agent: 'test-client/1.0',
+    });
+
+    expect(row.clientIp).toBe('192.0.2.10');
+    expect(row.xForwardedFor).toBe('203.0.113.5, 198.51.100.8');
+    expect(row.userAgent).toBe('test-client/1.0');
+    expect(row.searchText).toContain('192.0.2.10');
+    expect(row.searchText).toContain('198.51.100.8');
+    expect(row.searchText).toContain('test-client/1.0');
   });
 
   it('keeps response header diagnostics searchable', () => {

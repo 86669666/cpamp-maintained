@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
 	collectorpkg "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
@@ -22,11 +23,46 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/collector"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	managerconfigsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
+	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/testutil"
 )
 
 const xaiCompletedInferenceAPICallResponse = `{"status_code":200,"body":{"object":"response","status":"completed","error":null,"output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}]}}`
+
+type synchronizedStringList struct {
+	mu     sync.Mutex
+	values []string
+}
+
+func (s *synchronizedStringList) append(value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.values = append(s.values, value)
+}
+
+func (s *synchronizedStringList) snapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.values...)
+}
+
+type synchronizedCounter struct {
+	mu    sync.Mutex
+	value int
+}
+
+func (c *synchronizedCounter) increment() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.value++
+}
+
+func (c *synchronizedCounter) load() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.value
+}
 
 type failAfterInsertCodexInspectionRepository struct {
 	codexinspectionrepo.Repository
@@ -84,6 +120,24 @@ type failDisableOwnershipBatchRepository struct {
 	cancel context.CancelFunc
 }
 
+type failFirstQuotaSnapshotWriter struct {
+	delegate quotaSnapshotWriter
+	failed   bool
+	calls    int
+}
+
+func (w *failFirstQuotaSnapshotWriter) WriteCodexInspectionResult(
+	ctx context.Context,
+	result model.CodexInspectionResult,
+) error {
+	w.calls++
+	if !w.failed {
+		w.failed = true
+		return errors.New("forced quota snapshot write failure")
+	}
+	return w.delegate.WriteCodexInspectionResult(ctx, result)
+}
+
 func (r *failDisableOwnershipBatchRepository) UpsertDisableOwnerships(
 	context.Context,
 	[]model.CodexInspectionDisableOwnership,
@@ -103,6 +157,146 @@ func requireInspectionLog(t *testing.T, logs []model.CodexInspectionLog, message
 	}
 	t.Fatalf("inspection log %q not found in %#v", message, logs)
 	return model.CodexInspectionLog{}
+}
+
+func TestPersistInspectionResultsKeepsOneQuotaObservationStableAcrossLifecyclePhases(t *testing.T) {
+	db := newCodexInspectionTestStore(t)
+	svc := New(db, nil)
+	quotaService := quotasnapshotsvc.New(db)
+	statusOK := http.StatusOK
+	duration := float64(5 * 60 * 60)
+	usedPercent := 20.0
+	observedAtMS := time.Now().Add(-time.Minute).UnixMilli()
+	initial := model.CodexInspectionResult{
+		ID:              1,
+		RunID:           1,
+		AccountKey:      "codex.json::-::auth-1",
+		FileName:        "codex.json",
+		DisplayAccount:  "alice@example.com",
+		AccountSnapshot: "alice@example.com",
+		AuthIndex:       "auth-1",
+		Provider:        "codex",
+		Action:          "keep",
+		StatusCode:      &statusOK,
+		CreatedAtMS:     observedAtMS,
+		QuotaWindows: []model.CodexInspectionQuotaWindow{{
+			ID:                 "five-hour",
+			UsedPercent:        &usedPercent,
+			ResetAtMS:          observedAtMS + int64(duration)*1000,
+			ResetAccuracy:      "exact",
+			LimitWindowSeconds: &duration,
+		}},
+		QuotaInventoryObserved: true,
+	}
+	if err := quotaService.WriteCodexInspectionResult(context.Background(), initial); err != nil {
+		t.Fatalf("seed active quota window: %v", err)
+	}
+	run, err := db.CreateCodexInspectionRun(context.Background(), model.CodexInspectionRun{
+		TriggerType: "manual",
+		Status:      model.CodexInspectionStatusCompleted,
+		StartedAtMS: observedAtMS + 1,
+		Settings:    model.DefaultCodexInspectionConfig(),
+	})
+	if err != nil {
+		t.Fatalf("create inspection run: %v", err)
+	}
+	results := []model.CodexInspectionResult{{
+		AccountKey:             initial.AccountKey,
+		FileName:               initial.FileName,
+		DisplayAccount:         initial.DisplayAccount,
+		AccountSnapshot:        initial.AccountSnapshot,
+		AuthIndex:              initial.AuthIndex,
+		Provider:               "codex",
+		Action:                 "keep",
+		StatusCode:             &statusOK,
+		QuotaInventoryObserved: true,
+	}}
+
+	if failures := svc.persistInspectionResults(context.Background(), run.ID, results, runLogger{}); failures != 0 {
+		t.Fatalf("first persistence failures = %d", failures)
+	}
+	firstID, firstCreatedAtMS := results[0].ID, results[0].CreatedAtMS
+	if firstID <= 0 || firstCreatedAtMS <= 0 {
+		t.Fatalf("stored identity was not copied back: %#v", results[0])
+	}
+	time.Sleep(2 * time.Millisecond)
+	if failures := svc.persistInspectionResults(context.Background(), run.ID, results, runLogger{}); failures != 0 {
+		t.Fatalf("second persistence failures = %d", failures)
+	}
+	if results[0].ID != firstID || results[0].CreatedAtMS != firstCreatedAtMS {
+		t.Fatalf("stored observation identity changed: first=(%d,%d) second=(%d,%d)", firstID, firstCreatedAtMS, results[0].ID, results[0].CreatedAtMS)
+	}
+
+	query, err := quotaService.Query(context.Background(), quotasnapshotsvc.QueryRequest{
+		Accounts: []quotasnapshotsvc.QueryAccount{{
+			RowKey:   "row-1",
+			Provider: "codex",
+			Account: quotasnapshotsvc.AccountTarget{
+				AuthFileSnapshot:     initial.FileName,
+				AuthProviderSnapshot: "codex",
+				AuthIndex:            initial.AuthIndex,
+				AccountSnapshot:      initial.AccountSnapshot,
+			},
+		}},
+		IncludeInactive: true,
+	})
+	if err != nil {
+		t.Fatalf("query quota lifecycle: %v", err)
+	}
+	if len(query.Items) != 1 || len(query.Items[0].Windows) != 1 || query.Items[0].Windows[0].Availability != "pending_absent" {
+		t.Fatalf("one empty inspection observation retired quota window: %#v", query)
+	}
+}
+
+func TestPersistInspectionResultsCountsQuotaSnapshotFailuresForRetry(t *testing.T) {
+	db := newCodexInspectionTestStore(t)
+	svc := New(db, nil)
+	delegate := svc.quotaSnapshots
+	failing := &failFirstQuotaSnapshotWriter{delegate: delegate}
+	svc.quotaSnapshots = failing
+	statusOK := http.StatusOK
+	duration := float64(5 * 60 * 60)
+	usedPercent := 35.0
+	run, err := db.CreateCodexInspectionRun(context.Background(), model.CodexInspectionRun{
+		TriggerType: "manual",
+		Status:      model.CodexInspectionStatusCompleted,
+		StartedAtMS: time.Now().UnixMilli(),
+		Settings:    model.DefaultCodexInspectionConfig(),
+	})
+	if err != nil {
+		t.Fatalf("create inspection run: %v", err)
+	}
+	results := []model.CodexInspectionResult{{
+		AccountKey:      "codex.json::-::auth-1",
+		FileName:        "codex.json",
+		DisplayAccount:  "alice@example.com",
+		AccountSnapshot: "alice@example.com",
+		AuthIndex:       "auth-1",
+		Provider:        "codex",
+		Action:          "keep",
+		StatusCode:      &statusOK,
+		QuotaWindows: []model.CodexInspectionQuotaWindow{{
+			ID:                 "five-hour",
+			UsedPercent:        &usedPercent,
+			ResetAtMS:          time.Now().Add(5 * time.Hour).UnixMilli(),
+			ResetAccuracy:      "exact",
+			LimitWindowSeconds: &duration,
+		}},
+		QuotaInventoryObserved: true,
+	}}
+
+	if failures := svc.persistInspectionResults(context.Background(), run.ID, results, runLogger{}); failures != 1 {
+		t.Fatalf("first persistence failures = %d, want 1", failures)
+	}
+	if results[0].ID <= 0 || results[0].CreatedAtMS <= 0 {
+		t.Fatalf("result identity was not retained after snapshot failure: %#v", results[0])
+	}
+	if failures := svc.persistInspectionResults(context.Background(), run.ID, results, runLogger{}); failures != 0 {
+		t.Fatalf("retry persistence failures = %d", failures)
+	}
+	if failing.calls != 2 {
+		t.Fatalf("quota snapshot calls = %d, want 2", failing.calls)
+	}
 }
 
 func requireInspectionLogDetail(t *testing.T, entry model.CodexInspectionLog) map[string]any {
@@ -176,6 +370,246 @@ func TestToAccountBuildsStableDistinctFallbackKeys(t *testing.T) {
 	})
 	if renamedLabel.Key != labelOnly.Key {
 		t.Fatalf("label-only runtime key changed with display label: old=%q new=%q", labelOnly.Key, renamedLabel.Key)
+	}
+}
+
+func TestRunMarksOnlyRecognizedEmptyCodexQuotaInventory(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantMarker string
+	}{
+		{
+			name:       "recognized empty inventory",
+			body:       `{"status_code":200,"body":{"rate_limit":{}}}`,
+			wantMarker: "[]",
+		},
+		{
+			name:       "recognized empty code review inventory",
+			body:       `{"status_code":200,"body":{"code_review_rate_limit":{}}}`,
+			wantMarker: "[]",
+		},
+		{
+			name:       "recognized empty additional inventory",
+			body:       `{"status_code":200,"body":{"additional_rate_limits":[]}}`,
+			wantMarker: "[]",
+		},
+		{
+			name: "successful response without quota inventory",
+			body: `{"status_code":200,"body":{"status":"ok"}}`,
+		},
+		{
+			name: "malformed quota inventory",
+			body: `{"status_code":200,"body":{"rate_limit":"schema-changed"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+					_, _ = w.Write([]byte(`{"files":[{"name":"auth-a.json","auth_index":"auth-1","provider":"codex","account":"alice@example.com","status":"ok","state":"ready"}]}`))
+				case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+					_, _ = w.Write([]byte(tt.body))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			db := newCodexInspectionTestStore(t)
+			managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+			managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionNone
+			if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+				t.Fatalf("save manager config: %v", err)
+			}
+
+			detail, err := newCodexInspectionTestService(t, db).Run(
+				context.Background(),
+				RunRequest{TriggerType: "manual"},
+			)
+			if err != nil {
+				t.Fatalf("run inspection: %v", err)
+			}
+			if len(detail.Results) != 1 {
+				t.Fatalf("inspection results = %#v", detail.Results)
+			}
+			result := detail.Results[0]
+			if len(result.QuotaWindows) != 0 || result.QuotaWindowsJSON != tt.wantMarker {
+				t.Fatalf(
+					"quota inventory marker = %q windows=%#v, want %q",
+					result.QuotaWindowsJSON,
+					result.QuotaWindows,
+					tt.wantMarker,
+				)
+			}
+		})
+	}
+}
+
+func TestBuildCodexInspectionQuotaWindowsKeepsGenericFamiliesDistinct(t *testing.T) {
+	genericWindow := func(usedPercent float64) map[string]any {
+		return map[string]any{
+			"primary_window": map[string]any{
+				"used_percent": usedPercent, "limit_window_seconds": 2 * 24 * 60 * 60,
+			},
+		}
+	}
+	windows := buildCodexInspectionQuotaWindows(map[string]any{
+		"rate_limit":             genericWindow(10),
+		"code_review_rate_limit": genericWindow(20),
+		"additional_rate_limits": []any{
+			map[string]any{"limit_name": "Credits", "rate_limit": genericWindow(30)},
+			map[string]any{"limit_name": "Credits", "rate_limit": genericWindow(40)},
+		},
+	}, "")
+
+	want := []string{
+		"window-2d-0",
+		"code-review-window-2d-0",
+		"credits-0-window-2d-0",
+		"credits-1-window-2d-0",
+	}
+	if len(windows) != len(want) {
+		t.Fatalf("generic quota windows = %#v, want %d", windows, len(want))
+	}
+	seen := make(map[string]bool, len(windows))
+	for index, window := range windows {
+		if window.ID != want[index] {
+			t.Fatalf("generic quota window %d id = %q, want %q", index, window.ID, want[index])
+		}
+		if seen[window.ID] {
+			t.Fatalf("duplicate generic quota window id %q: %#v", window.ID, windows)
+		}
+		seen[window.ID] = true
+	}
+}
+
+func TestBuildCodexInspectionQuotaWindowsAssignsCodexScopes(t *testing.T) {
+	weekly := func(usedPercent float64) map[string]any {
+		return map[string]any{
+			"secondary_window": map[string]any{
+				"used_percent": usedPercent, "limit_window_seconds": 7 * 24 * 60 * 60,
+			},
+		}
+	}
+	windows := buildCodexInspectionQuotaWindows(map[string]any{
+		"rate_limit":             weekly(36),
+		"code_review_rate_limit": weekly(20),
+		"additional_rate_limits": []any{
+			map[string]any{
+				"limit_name": "Fast coding", "metered_feature": "codex_spark", "rate_limit": weekly(0),
+			},
+			map[string]any{
+				"limit_name": "Future Feature", "metered_feature": "future_feature", "rate_limit": weekly(10),
+			},
+		},
+	}, "")
+	byID := make(map[string]model.CodexInspectionQuotaWindow, len(windows))
+	for _, window := range windows {
+		byID[window.ID] = window
+	}
+	assertScope := func(id, kind, key string, models []string, complete bool) {
+		t.Helper()
+		window, ok := byID[id]
+		if !ok || window.ModelScope == nil {
+			t.Fatalf("quota window %q scope missing: %#v", id, windows)
+		}
+		if window.ModelScope.Kind != kind || window.ModelScope.Key != key ||
+			!reflect.DeepEqual(window.ModelScope.Models, models) || window.ModelScope.Complete != complete {
+			t.Fatalf("quota window %q scope = %#v", id, window.ModelScope)
+		}
+	}
+	assertScope("weekly", "family", codexquota.MainScopeKey, nil, true)
+	assertScope("spark-weekly-0", "models", "", []string{codexquota.SparkModelID}, true)
+	if !containsString(byID["spark-weekly-0"].ProviderWindowAliases, "fast-coding-weekly-0") {
+		t.Fatalf("Spark legacy provider aliases = %#v", byID["spark-weekly-0"].ProviderWindowAliases)
+	}
+	assertScope("code-review-weekly", "feature", codexquota.CodeReviewScopeKey, nil, false)
+	assertScope("future-feature-weekly-0", "feature", "future_feature", nil, false)
+}
+
+func containsString(values []string, expected string) bool {
+	for _, value := range values {
+		if value == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBuildCodexInspectionQuotaWindowsKeepsDistinctAdditionalFamiliesStableAcrossReorder(t *testing.T) {
+	family := func(name string, usedPercent float64) map[string]any {
+		return map[string]any{
+			"limit_name": name,
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{
+					"used_percent": usedPercent, "limit_window_seconds": 18_000,
+				},
+			},
+		}
+	}
+	idsByUsage := func(items []map[string]any) map[float64]string {
+		windows := buildCodexInspectionQuotaWindows(map[string]any{"additional_rate_limits": items}, "")
+		result := make(map[float64]string, len(windows))
+		for _, window := range windows {
+			if window.UsedPercent != nil {
+				result[*window.UsedPercent] = window.ID
+			}
+		}
+		return result
+	}
+	want := map[float64]string{
+		30: "credits-five-hour-0",
+		40: "review-premium-five-hour-0",
+	}
+	forward := idsByUsage([]map[string]any{family("Credits", 30), family("Review Premium", 40)})
+	reverse := idsByUsage([]map[string]any{family("Review Premium", 40), family("Credits", 30)})
+	if !reflect.DeepEqual(forward, want) || !reflect.DeepEqual(reverse, want) {
+		t.Fatalf("reordered additional family ids: forward=%#v reverse=%#v want=%#v", forward, reverse, want)
+	}
+}
+
+func TestBuildCodexInspectionQuotaWindowsUsesMeteredFeatureForDuplicateNames(t *testing.T) {
+	family := func(feature string, usedPercent float64) map[string]any {
+		return map[string]any{
+			"limit_name":      "Credits",
+			"metered_feature": feature,
+			"rate_limit": map[string]any{
+				"primary_window": map[string]any{
+					"used_percent": usedPercent, "limit_window_seconds": 18_000,
+				},
+			},
+		}
+	}
+	idsByUsage := func(items []map[string]any) map[float64]string {
+		windows := buildCodexInspectionQuotaWindows(map[string]any{"additional_rate_limits": items}, "")
+		result := make(map[float64]string, len(windows))
+		for _, window := range windows {
+			if window.UsedPercent != nil {
+				result[*window.UsedPercent] = window.ID
+			}
+		}
+		return result
+	}
+	want := map[float64]string{
+		30: "credits--chat-completions-five-hour-0",
+		40: "credits--code-review-five-hour-0",
+		50: "credits-chat-completions-five-hour-0",
+	}
+	namedCollision := map[string]any{
+		"limit_name": "Credits Chat Completions",
+		"rate_limit": map[string]any{
+			"primary_window": map[string]any{
+				"used_percent": 50.0, "limit_window_seconds": 18_000,
+			},
+		},
+	}
+	forward := idsByUsage([]map[string]any{family("chat_completions", 30), family("code_review", 40), namedCollision})
+	reverse := idsByUsage([]map[string]any{namedCollision, family("code_review", 40), family("chat_completions", 30)})
+	if !reflect.DeepEqual(forward, want) || !reflect.DeepEqual(reverse, want) {
+		t.Fatalf("duplicate-name additional family ids: forward=%#v reverse=%#v want=%#v", forward, reverse, want)
 	}
 }
 
@@ -415,7 +849,7 @@ func TestRunCompletionLogWarnsWhenAutomaticActionFails(t *testing.T) {
 }
 
 func TestRunXAISkipsInferenceWhenDisabled(t *testing.T) {
-	requestedURLs := make([]string, 0, 2)
+	var requestedURLs synchronizedStringList
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
@@ -428,7 +862,7 @@ func TestRunXAISkipsInferenceWhenDisabled(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode api-call payload: %v", err)
 			}
-			requestedURLs = append(requestedURLs, payload.URL)
+			requestedURLs.append(payload.URL)
 			if strings.HasSuffix(payload.URL, "/responses") {
 				t.Fatalf("disabled xAI inference requested %s", payload.URL)
 			}
@@ -456,8 +890,9 @@ func TestRunXAISkipsInferenceWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run xAI inspection: %v", err)
 	}
-	if len(requestedURLs) != 2 {
-		t.Fatalf("requested URLs = %#v, want weekly and monthly billing only", requestedURLs)
+	urls := requestedURLs.snapshot()
+	if len(urls) != 2 {
+		t.Fatalf("requested URLs = %#v, want weekly and monthly billing only", urls)
 	}
 	if len(result.Results) != 1 || result.Results[0].Action != "keep" || result.Results[0].ErrorKind != "billing_healthy" {
 		t.Fatalf("xAI billing-only result = %#v", result.Results)
@@ -531,8 +966,8 @@ func TestRunXAILogsMissingAuthIndexAsSkippedWarning(t *testing.T) {
 	}
 }
 
-func TestRunXAIBillingOnlyPrioritizesBlockingFailureOverPartialSummary(t *testing.T) {
-	requestedURLs := make([]string, 0, 2)
+func TestRunXAIBillingOnlyIgnoresDeprecatedMonthlyBlockingFailure(t *testing.T) {
+	var requestedURLs synchronizedStringList
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
@@ -544,7 +979,7 @@ func TestRunXAIBillingOnlyPrioritizesBlockingFailureOverPartialSummary(t *testin
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode api-call payload: %v", err)
 			}
-			requestedURLs = append(requestedURLs, payload.URL)
+			requestedURLs.append(payload.URL)
 			if strings.Contains(payload.URL, "format=credits") {
 				_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"credit_usage_percent":3,"current_period":{"end":"2026-07-29T00:00:00Z"}}}}`))
 				return
@@ -569,29 +1004,78 @@ func TestRunXAIBillingOnlyPrioritizesBlockingFailureOverPartialSummary(t *testin
 	if err != nil {
 		t.Fatalf("run xAI inspection: %v", err)
 	}
-	if len(requestedURLs) != 2 {
-		t.Fatalf("requested URLs = %#v, want weekly and monthly billing only", requestedURLs)
+	urls := requestedURLs.snapshot()
+	if len(urls) != 2 {
+		t.Fatalf("requested URLs = %#v, want weekly and monthly billing only", urls)
 	}
 	if len(result.Results) != 1 {
 		t.Fatalf("xAI result = %#v", result.Results)
 	}
 	item := result.Results[0]
-	if item.Action != "disable" || item.ErrorKind != "spending_limit" || item.StatusCode == nil || *item.StatusCode != http.StatusPaymentRequired {
-		t.Fatalf("xAI partial blocking result = %#v", item)
+	if item.Action != "keep" || item.ErrorKind != "billing_healthy" || item.StatusCode == nil || *item.StatusCode != http.StatusOK {
+		t.Fatalf("xAI unified weekly result = %#v", item)
 	}
 	if len(item.QuotaWindows) != 1 || item.QuotaWindows[0].ID != "xai-weekly" {
 		t.Fatalf("xAI partial blocking quota windows = %#v", item.QuotaWindows)
 	}
 	logEntry := requireInspectionLog(t, result.Logs, "monitoring.xai_inspection_log_server_complete")
-	if logEntry.Level != "warning" {
-		t.Fatalf("xAI blocking billing log level = %q, want warning", logEntry.Level)
+	if logEntry.Level != "info" {
+		t.Fatalf("xAI unified weekly log level = %q, want info", logEntry.Level)
 	}
 	detail := requireInspectionLogDetail(t, logEntry)
-	if detail["inspectionMode"] != "billing" || detail["healthEvidence"] != "spending_limit" {
-		t.Fatalf("xAI blocking billing log detail = %#v", detail)
+	if detail["inspectionMode"] != "billing" || detail["healthEvidence"] != "billing_healthy" || detail["billingPartial"] != false {
+		t.Fatalf("xAI unified weekly log detail = %#v", detail)
 	}
 	if _, ok := detail["inferenceHealthy"]; ok {
 		t.Fatalf("xAI blocking billing log reported inference health: %#v", detail)
+	}
+}
+
+func TestRunXAIAutoDisableDoesNotActOnDeprecatedMonthlyFailure(t *testing.T) {
+	patchCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"files":[{"id":"xai-auth.json","name":"xai-auth.json","auth_index":"xai-1","provider":"xai","account":"xai@example.com"}]}`))
+		case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
+			var payload struct {
+				URL string `json:"url"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode api-call payload: %v", err)
+			}
+			if strings.Contains(payload.URL, "format=credits") {
+				_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"credit_usage_percent":3,"current_period":{"type":"weekly","start":"2026-08-13T00:00:00Z","end":"2026-08-20T00:00:00Z"}}}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"status_code":402,"body":{"code":"personal-team-blocked:spending-limit"}}`))
+		case strings.HasPrefix(r.URL.Path, "/v0/management/auth-files") && r.Method == http.MethodPatch:
+			patchCalled = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	db := newCodexInspectionTestStore(t)
+	managerCfg := newCodexInspectionManagerConfig(upstream.URL)
+	managerCfg.CodexInspection.TargetType = "xai"
+	managerCfg.CodexInspection.XAIInferenceEnabled = false
+	managerCfg.CodexInspection.AutoActionMode = model.CodexInspectionAutoActionDisable
+	if err := db.SaveManagerConfig(context.Background(), managerCfg); err != nil {
+		t.Fatalf("save manager config: %v", err)
+	}
+
+	result, err := newCodexInspectionTestService(t, db).Run(context.Background(), RunRequest{TriggerType: "manual"})
+	if err != nil {
+		t.Fatalf("run xAI inspection: %v", err)
+	}
+	if patchCalled {
+		t.Fatal("automatic disable acted on a deprecated monthly failure")
+	}
+	if len(result.Results) != 1 || result.Results[0].Action != "keep" || result.Results[0].ErrorKind != "billing_healthy" {
+		t.Fatalf("xAI automatic-action result = %#v", result.Results)
 	}
 }
 
@@ -614,11 +1098,32 @@ func TestResolveXAIBasicInspectionResultClassifiesNonBlockingPartialBilling(t *t
 	}
 }
 
+func TestResolveXAIBasicInspectionResultKeepsWeeklyBlockingFailureWithLegacySummary(t *testing.T) {
+	monthlyLimit := float64(20000)
+	monthlyUsed := float64(25)
+	result := resolveXAIBasicInspectionResult(
+		model.CodexInspectionResult{},
+		xaiBillingProbe{
+			Summary: &xaiBillingSummary{
+				MonthlyLimitCents: &monthlyLimit,
+				UsedPercent:       &monthlyUsed,
+				HasMonthlyData:    true,
+			},
+			Failures: []xaiProbeDecision{*xaiDecision(http.StatusPaymentRequired, "spending_limit", "weekly quota exhausted")},
+			Partial:  true,
+			Healthy:  true,
+		},
+	)
+	if result.Action != "disable" || result.ErrorKind != "spending_limit" || result.StatusCode == nil || *result.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("xAI weekly blocking failure with legacy summary = %#v", result)
+	}
+}
+
 func TestRunXAIUsesBillingAndInferenceEndpoints(t *testing.T) {
 	const customModel = "grok-custom"
 	const customPrompt = "Return a short health response."
 	const customUserAgent = "xai-custom-agent"
-	requestedURLs := make([]string, 0, 3)
+	var requestedURLs synchronizedStringList
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
@@ -633,7 +1138,7 @@ func TestRunXAIUsesBillingAndInferenceEndpoints(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode api-call payload: %v", err)
 			}
-			requestedURLs = append(requestedURLs, payload.URL)
+			requestedURLs.append(payload.URL)
 			if strings.Contains(payload.URL, "chatgpt.com") {
 				t.Fatalf("xAI inspection called Codex endpoint: %s", payload.URL)
 			}
@@ -695,8 +1200,9 @@ func TestRunXAIUsesBillingAndInferenceEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run xAI inspection: %v", err)
 	}
-	if len(requestedURLs) != 3 || !strings.HasSuffix(requestedURLs[2], "/responses") {
-		t.Fatalf("requested URLs = %#v, want weekly/monthly billing and inference", requestedURLs)
+	urls := requestedURLs.snapshot()
+	if len(urls) != 3 || !strings.HasSuffix(urls[2], "/responses") {
+		t.Fatalf("requested URLs = %#v, want weekly/monthly billing and inference", urls)
 	}
 	if len(result.Results) != 1 || result.Results[0].Provider != "xai" || result.Results[0].Action != "keep" {
 		t.Fatalf("xAI result = %#v", result.Results)
@@ -783,7 +1289,7 @@ func TestResolveXAIInferenceURLMatchesRuntimeUsingAPISemantics(t *testing.T) {
 }
 
 func TestRunCombinedTargetsSamplesEachCredentialProvider(t *testing.T) {
-	requestedInference := 0
+	var requestedInference synchronizedCounter
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
@@ -799,7 +1305,7 @@ func TestRunCombinedTargetsSamplesEachCredentialProvider(t *testing.T) {
 			case strings.Contains(payload.URL, "chatgpt.com"):
 				_, _ = w.Write([]byte(`{"status_code":200,"body":{"rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000}}}}`))
 			case strings.HasSuffix(payload.URL, "/responses"):
-				requestedInference++
+				requestedInference.increment()
 				_, _ = w.Write([]byte(xaiCompletedInferenceAPICallResponse))
 			case strings.Contains(payload.URL, "/billing"):
 				_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"credit_usage_percent":20,"current_period":{"end":"2026-07-22T00:00:00Z"}}}}`))
@@ -833,13 +1339,14 @@ func TestRunCombinedTargetsSamplesEachCredentialProvider(t *testing.T) {
 	for _, result := range detail.Results {
 		providers[result.Provider] = true
 	}
-	if !providers["codex"] || !providers["xai"] || requestedInference != 1 {
-		t.Fatalf("providers=%#v inference=%d", providers, requestedInference)
+	inferenceCount := requestedInference.load()
+	if !providers["codex"] || !providers["xai"] || inferenceCount != 1 {
+		t.Fatalf("providers=%#v inference=%d", providers, inferenceCount)
 	}
 }
 
 func TestRunXAIFallsBackToOfficialAPIIdentityHealth(t *testing.T) {
-	requestedURLs := make([]string, 0, 3)
+	var requestedURLs synchronizedStringList
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
@@ -853,7 +1360,7 @@ func TestRunXAIFallsBackToOfficialAPIIdentityHealth(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode api-call payload: %v", err)
 			}
-			requestedURLs = append(requestedURLs, payload.URL)
+			requestedURLs.append(payload.URL)
 			if strings.HasSuffix(payload.URL, "/responses") {
 				if payload.Method != http.MethodPost {
 					t.Fatalf("xAI inference method = %q, want POST", payload.Method)
@@ -896,8 +1403,9 @@ func TestRunXAIFallsBackToOfficialAPIIdentityHealth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run xAI inspection: %v", err)
 	}
-	if len(requestedURLs) != 4 || requestedURLs[2] != xaiOfficialAPIMeURL || requestedURLs[3] != xaiOfficialAPIBaseURL+"/responses" {
-		t.Fatalf("requested URLs = %#v, want billing, identity fallback, and inference", requestedURLs)
+	urls := requestedURLs.snapshot()
+	if len(urls) != 4 || urls[2] != xaiOfficialAPIMeURL || urls[3] != xaiOfficialAPIBaseURL+"/responses" {
+		t.Fatalf("requested URLs = %#v, want billing, identity fallback, and inference", urls)
 	}
 	if len(result.Results) != 1 {
 		t.Fatalf("xAI result = %#v", result.Results)
@@ -967,6 +1475,338 @@ func TestParseXAIBillingSummaryDoesNotCreateMonthlyWindowFromWeeklyZeroOnDemandD
 	}
 }
 
+func TestParseXAIBillingSummaryTreatsOmittedWeeklyPercentAsResetZeroOnlyForValidPeriod(t *testing.T) {
+	valid := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type":  "USAGE_PERIOD_TYPE_WEEKLY",
+			"start": "2026-08-13T00:00:00Z",
+			"end":   "2026-08-20T00:00:00Z",
+		},
+	})
+	if valid == nil || valid.UsagePercent == nil || *valid.UsagePercent != 0 {
+		t.Fatalf("valid weekly reset summary = %#v, want zero usage", valid)
+	}
+
+	incomplete := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type": "USAGE_PERIOD_TYPE_WEEKLY",
+			"end":  "2026-08-20T00:00:00Z",
+		},
+	})
+	if incomplete == nil || incomplete.UsagePercent != nil {
+		t.Fatalf("incomplete weekly period summary = %#v, want unknown usage", incomplete)
+	}
+}
+
+func TestParseXAIBillingSummaryTreatsNestedEmptyCentValuesAsPlaceholders(t *testing.T) {
+	summary := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type":  "USAGE_PERIOD_TYPE_WEEKLY",
+			"start": "2026-08-13T00:00:00Z",
+			"end":   "2026-08-20T00:00:00Z",
+		},
+		"onDemandCap": map[string]any{},
+		"usage": map[string]any{
+			"includedUsed": map[string]any{},
+			"onDemandUsed": map[string]any{},
+			"totalUsed":    map[string]any{},
+		},
+		"billingPeriodEnd": "2026-09-01T00:00:00Z",
+	})
+	if summary == nil || summary.UsagePercent == nil || *summary.UsagePercent != 0 {
+		t.Fatalf("nested weekly summary = %#v", summary)
+	}
+	for name, value := range map[string]*float64{
+		"used": summary.UsedCents, "included": summary.IncludedUsedCents,
+		"on-demand cap": summary.OnDemandCapCents, "on-demand used": summary.OnDemandUsedCents,
+	} {
+		if value != nil {
+			t.Fatalf("%s cents = %#v, want absent", name, value)
+		}
+	}
+	if summary.MonthlyLimitCents != nil {
+		t.Fatalf("nested usage invented monthly limit: %#v", summary.MonthlyLimitCents)
+	}
+	if windows := xaiSummaryWindows(summary); len(windows) != 1 || windows[0].ID != "xai-weekly" {
+		t.Fatalf("nested zero-value windows = %#v, want weekly only", windows)
+	}
+}
+
+func TestParseXAIBillingSummaryKeepsEmptyLimitAbsentWithRealMonthlyUsage(t *testing.T) {
+	summary := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit":     map[string]any{},
+		"used":             map[string]any{"val": 500},
+		"billingPeriodEnd": "2026-09-01T00:00:00Z",
+	})
+	if summary == nil || summary.UsedCents == nil || *summary.UsedCents != 500 || summary.IncludedUsedCents == nil || *summary.IncludedUsedCents != 500 {
+		t.Fatalf("mixed monthly summary = %#v", summary)
+	}
+	if summary.MonthlyLimitCents != nil || summary.UsedPercent != nil || summary.HasMonthlyLimit {
+		t.Fatalf("empty monthly limit became evidence: %#v", summary)
+	}
+	if windows := xaiSummaryWindows(summary); len(windows) != 0 {
+		t.Fatalf("limitless monthly usage produced quota window: %#v", windows)
+	}
+}
+
+func TestParseXAIBillingSummaryFallsThroughAliasPlaceholders(t *testing.T) {
+	summary := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit":  map[string]any{},
+		"monthly_limit": map[string]any{"val": 10000},
+		"onDemandCap":   map[string]any{"val": "invalid"},
+		"on_demand_cap": map[string]any{"val": 5000},
+		"used":          map[string]any{"val": 2500},
+	})
+	for name, value := range map[string]struct {
+		actual *float64
+		want   float64
+	}{
+		"monthly limit": {summary.MonthlyLimitCents, 10000},
+		"used":          {summary.UsedCents, 2500},
+		"included":      {summary.IncludedUsedCents, 2500},
+		"monthly pct":   {summary.UsedPercent, 25},
+		"payg cap":      {summary.OnDemandCapCents, 5000},
+	} {
+		if value.actual == nil || *value.actual != value.want {
+			t.Fatalf("%s = %#v, want %.0f", name, value.actual, value.want)
+		}
+	}
+}
+
+func TestParseXAIBillingSummaryDerivesIncludedUsagePastEmptyPlaceholder(t *testing.T) {
+	summary := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit": map[string]any{"val": 10000},
+		"used":         map[string]any{"val": 12500},
+		"onDemandCap":  map[string]any{"val": 5000},
+		"usage": map[string]any{
+			"includedUsed": map[string]any{},
+		},
+	})
+	for name, value := range map[string]struct {
+		actual *float64
+		want   float64
+	}{
+		"used":           {summary.UsedCents, 12500},
+		"included":       {summary.IncludedUsedCents, 10000},
+		"monthly pct":    {summary.UsedPercent, 100},
+		"on-demand used": {summary.OnDemandUsedCents, 2500},
+		"on-demand pct":  {summary.OnDemandUsedPercent, 50},
+	} {
+		if value.actual == nil || *value.actual != value.want {
+			t.Fatalf("%s = %#v, want %.0f", name, value.actual, value.want)
+		}
+	}
+	if summary.HasIncludedUsed {
+		t.Fatalf("empty included usage became evidence: %#v", summary)
+	}
+}
+
+func TestMergeXAIBillingSummaryUsesLegacyBillingGroupsOverWeeklyPlaceholders(t *testing.T) {
+	weekly := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type":  "USAGE_PERIOD_TYPE_WEEKLY",
+			"start": "2026-08-13T00:00:00Z",
+			"end":   "2026-08-20T00:00:00Z",
+		},
+		"onDemandCap": map[string]any{},
+		"usage": map[string]any{
+			"includedUsed": map[string]any{},
+			"onDemandUsed": map[string]any{},
+			"totalUsed":    map[string]any{},
+		},
+	})
+	legacy := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit":     map[string]any{"val": 10000},
+		"used":             map[string]any{"val": 12500},
+		"onDemandCap":      map[string]any{"val": 5000},
+		"onDemandUsed":     map[string]any{"val": 2500},
+		"billingPeriodEnd": "2026-09-01T00:00:00Z",
+	})
+
+	merged := mergeXAIBillingSummary(weekly, legacy)
+	if merged == nil || merged.UsagePercent == nil || *merged.UsagePercent != 0 {
+		t.Fatalf("merged weekly summary = %#v", merged)
+	}
+	for name, value := range map[string]struct {
+		actual *float64
+		want   float64
+	}{
+		"monthly limit": {merged.MonthlyLimitCents, 10000},
+		"used":          {merged.UsedCents, 12500},
+		"included":      {merged.IncludedUsedCents, 10000},
+		"monthly pct":   {merged.UsedPercent, 100},
+		"payg cap":      {merged.OnDemandCapCents, 5000},
+		"payg used":     {merged.OnDemandUsedCents, 2500},
+		"payg pct":      {merged.OnDemandUsedPercent, 50},
+	} {
+		if value.actual == nil || *value.actual != value.want {
+			t.Fatalf("%s = %#v, want %.0f", name, value.actual, value.want)
+		}
+	}
+	if merged.BillingPeriodEnd != "2026-09-01T00:00:00Z" {
+		t.Fatalf("billing period end = %q", merged.BillingPeriodEnd)
+	}
+}
+
+func TestMergeXAIBillingSummaryRecomputesUsedCentsAcrossMixedSources(t *testing.T) {
+	weekly := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type":  "USAGE_PERIOD_TYPE_WEEKLY",
+			"start": "2026-08-13T00:00:00Z",
+			"end":   "2026-08-20T00:00:00Z",
+		},
+		"onDemandCap":      map[string]any{"val": 5000},
+		"onDemandUsed":     map[string]any{"val": 2500},
+		"billingPeriodEnd": "2026-09-01T00:00:00Z",
+	})
+	legacy := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit": map[string]any{"val": 10000},
+		"usage": map[string]any{
+			"includedUsed": map[string]any{"val": 8000},
+		},
+		"billingPeriodEnd": "2026-09-01T00:00:00Z",
+	})
+
+	merged := mergeXAIBillingSummary(weekly, legacy)
+	for name, value := range map[string]struct {
+		actual *float64
+		want   float64
+	}{
+		"used":        {merged.UsedCents, 10500},
+		"included":    {merged.IncludedUsedCents, 8000},
+		"monthly pct": {merged.UsedPercent, 80},
+		"payg used":   {merged.OnDemandUsedCents, 2500},
+		"payg pct":    {merged.OnDemandUsedPercent, 50},
+	} {
+		if value.actual == nil || *value.actual != value.want {
+			t.Fatalf("%s = %#v, want %.0f", name, value.actual, value.want)
+		}
+	}
+}
+
+func TestMergeXAIBillingSummaryKeepsConflictingUnifiedFields(t *testing.T) {
+	unified := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type":  "weekly",
+			"start": "2026-08-13T00:00:00Z",
+			"end":   "2026-08-20T00:00:00Z",
+		},
+		"monthlyLimit":     map[string]any{"val": 20000},
+		"used":             map[string]any{"val": 5000},
+		"onDemandCap":      map[string]any{"val": 6000},
+		"onDemandUsed":     map[string]any{"val": 1000},
+		"billingPeriodEnd": "2026-09-02T00:00:00Z",
+	})
+	legacy := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit":     map[string]any{"val": 10000},
+		"used":             map[string]any{"val": 9000},
+		"onDemandCap":      map[string]any{"val": 2000},
+		"onDemandUsed":     map[string]any{"val": 1500},
+		"billingPeriodEnd": "2026-09-01T00:00:00Z",
+	})
+
+	merged := mergeXAIBillingSummary(unified, legacy)
+	for name, value := range map[string]struct {
+		actual *float64
+		want   float64
+	}{
+		"monthly limit": {merged.MonthlyLimitCents, 20000},
+		"used":          {merged.UsedCents, 5000},
+		"included":      {merged.IncludedUsedCents, 5000},
+		"monthly pct":   {merged.UsedPercent, 25},
+		"payg cap":      {merged.OnDemandCapCents, 6000},
+		"payg used":     {merged.OnDemandUsedCents, 1000},
+	} {
+		if value.actual == nil || *value.actual != value.want {
+			t.Fatalf("%s = %#v, want %.0f", name, value.actual, value.want)
+		}
+	}
+	if merged.BillingPeriodEnd != "2026-09-02T00:00:00Z" {
+		t.Fatalf("billing period end = %q", merged.BillingPeriodEnd)
+	}
+}
+
+func TestMergeXAIBillingSummaryUsesPartialLegacyOnlyForMissingFields(t *testing.T) {
+	unified := parseXAIBillingSummary(map[string]any{
+		"currentPeriod": map[string]any{
+			"type":  "weekly",
+			"start": "2026-08-13T00:00:00Z",
+			"end":   "2026-08-20T00:00:00Z",
+		},
+		"usage": map[string]any{
+			"includedUsed": map[string]any{"val": 5000},
+		},
+		"onDemandCap":  map[string]any{"val": 6000},
+		"onDemandUsed": map[string]any{"val": 1000},
+	})
+	legacy := parseXAIBillingSummary(map[string]any{
+		"monthlyLimit":     map[string]any{"val": 20000},
+		"billingPeriodEnd": "2026-09-01T00:00:00Z",
+	})
+
+	merged := mergeXAIBillingSummary(unified, legacy)
+	for name, value := range map[string]struct {
+		actual *float64
+		want   float64
+	}{
+		"monthly limit": {merged.MonthlyLimitCents, 20000},
+		"used":          {merged.UsedCents, 6000},
+		"included":      {merged.IncludedUsedCents, 5000},
+		"monthly pct":   {merged.UsedPercent, 25},
+		"payg cap":      {merged.OnDemandCapCents, 6000},
+		"payg used":     {merged.OnDemandUsedCents, 1000},
+	} {
+		if value.actual == nil || *value.actual != value.want {
+			t.Fatalf("%s = %#v, want %.0f", name, value.actual, value.want)
+		}
+	}
+	if merged.BillingPeriodEnd != "2026-09-01T00:00:00Z" {
+		t.Fatalf("billing period end = %q", merged.BillingPeriodEnd)
+	}
+}
+
+func TestRequestXAIBillingBoundsLegacyEnrichmentLatency(t *testing.T) {
+	legacyStarted := make(chan struct{})
+	weeklyReleased := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode api-call payload: %v", err)
+		}
+		if strings.Contains(payload.URL, "format=credits") {
+			<-legacyStarted
+			close(weeklyReleased)
+			_, _ = w.Write([]byte(`{"status_code":200,"body":{"config":{"credit_usage_percent":3,"current_period":{"type":"weekly","start":"2026-08-13T00:00:00Z","end":"2026-08-20T00:00:00Z"}}}}`))
+			return
+		}
+		close(legacyStarted)
+		<-weeklyReleased
+		<-r.Context().Done()
+	}))
+	t.Cleanup(upstream.Close)
+
+	settings := model.DefaultCodexInspectionConfig()
+	settings.Timeout = 100
+	startedAt := time.Now()
+	probe, err := New(nil, nil, upstream.Client()).requestXAIBilling(
+		context.Background(),
+		store.Setup{CPAUpstreamURL: upstream.URL, ManagementKey: "management-key"},
+		settings,
+		account{AuthIndex: "xai-1", File: authFile{}},
+	)
+	if err != nil {
+		t.Fatalf("request xAI billing: %v", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed >= 500*time.Millisecond {
+		t.Fatalf("legacy enrichment delayed weekly billing for %s", elapsed)
+	}
+	if probe.Summary == nil || probe.Summary.UsagePercent == nil || *probe.Summary.UsagePercent != 3 || !probe.Healthy {
+		t.Fatalf("weekly billing probe = %#v", probe)
+	}
+}
+
 func TestHasCompletedXAIInferenceOutput(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1012,7 +1852,7 @@ func TestRunXAIDoesNotFallbackToOfficialAPIForExplicitBillingDenials(t *testing.
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			requestedURLs := make([]string, 0, 2)
+			var requestedURLs synchronizedStringList
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
@@ -1024,7 +1864,7 @@ func TestRunXAIDoesNotFallbackToOfficialAPIForExplicitBillingDenials(t *testing.
 					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 						t.Fatalf("decode api-call payload: %v", err)
 					}
-					requestedURLs = append(requestedURLs, payload.URL)
+					requestedURLs.append(payload.URL)
 					_, _ = w.Write([]byte(tc.apiCallBody))
 				default:
 					http.NotFound(w, r)
@@ -1044,12 +1884,13 @@ func TestRunXAIDoesNotFallbackToOfficialAPIForExplicitBillingDenials(t *testing.
 			if err != nil {
 				t.Fatalf("run xAI inspection: %v", err)
 			}
-			if len(requestedURLs) != 3 || !strings.HasSuffix(requestedURLs[2], "/responses") {
-				t.Fatalf("requested URLs = %#v, want billing requests followed by inference", requestedURLs)
+			urls := requestedURLs.snapshot()
+			if len(urls) != 3 || !strings.HasSuffix(urls[2], "/responses") {
+				t.Fatalf("requested URLs = %#v, want billing requests followed by inference", urls)
 			}
-			for _, requestedURL := range requestedURLs {
+			for _, requestedURL := range urls {
 				if requestedURL == xaiOfficialAPIMeURL {
-					t.Fatalf("explicit billing denial called official API fallback: %#v", requestedURLs)
+					t.Fatalf("explicit billing denial called official API fallback: %#v", urls)
 				}
 			}
 			if len(result.Results) != 1 || result.Results[0].ErrorKind != tc.classification || result.Results[0].ActionReason != tc.reason {
@@ -1071,7 +1912,7 @@ func TestRunXAIRejectsInvalidOfficialAPIIdentityPayload(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			requestedURLs := make([]string, 0, 3)
+			var requestedURLs synchronizedStringList
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
@@ -1083,7 +1924,7 @@ func TestRunXAIRejectsInvalidOfficialAPIIdentityPayload(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 						t.Fatalf("decode api-call payload: %v", err)
 					}
-					requestedURLs = append(requestedURLs, payload.URL)
+					requestedURLs.append(payload.URL)
 					if payload.URL == xaiOfficialAPIMeURL {
 						_, _ = w.Write([]byte(tc.apiCallBody))
 						return
@@ -1107,8 +1948,9 @@ func TestRunXAIRejectsInvalidOfficialAPIIdentityPayload(t *testing.T) {
 			if err != nil {
 				t.Fatalf("run xAI inspection: %v", err)
 			}
-			if len(requestedURLs) != 4 || requestedURLs[2] != xaiOfficialAPIMeURL || requestedURLs[3] != xaiCLIChatProxyBaseURL+"/responses" {
-				t.Fatalf("requested URLs = %#v, want billing, rejected identity fallback, and CLI inference", requestedURLs)
+			urls := requestedURLs.snapshot()
+			if len(urls) != 4 || urls[2] != xaiOfficialAPIMeURL || urls[3] != xaiCLIChatProxyBaseURL+"/responses" {
+				t.Fatalf("requested URLs = %#v, want billing, rejected identity fallback, and CLI inference", urls)
 			}
 			if len(result.Results) != 1 || result.Results[0].ErrorKind == "official_api_healthy" {
 				t.Fatalf("invalid official API payload reported healthy: %#v", result.Results)
@@ -1131,13 +1973,13 @@ func TestRunXAIFailedBillingNeverReportsHealthyAndRetriesTransientFailures(t *te
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			requestCount := 0
+			var requestCount synchronizedCounter
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/v0/management/auth-files" && r.Method == http.MethodGet:
 					_, _ = w.Write([]byte(`{"files":[{"name":"xai-auth.json","auth_index":"xai-1","provider":"xai","account":"xai@example.com"}]}`))
 				case r.URL.Path == "/v0/management/api-call" && r.Method == http.MethodPost:
-					requestCount++
+					requestCount.increment()
 					_, _ = w.Write([]byte(tc.apiCallBody))
 				default:
 					http.NotFound(w, r)
@@ -1158,8 +2000,9 @@ func TestRunXAIFailedBillingNeverReportsHealthyAndRetriesTransientFailures(t *te
 				t.Fatalf("run xAI inspection: %v", err)
 			}
 			wantRequestCount := 6
-			if requestCount != wantRequestCount {
-				t.Fatalf("billing and inference requests = %d, want %d", requestCount, wantRequestCount)
+			gotRequestCount := requestCount.load()
+			if gotRequestCount != wantRequestCount {
+				t.Fatalf("billing and inference requests = %d, want %d", gotRequestCount, wantRequestCount)
 			}
 			if len(detail.Results) != 1 {
 				t.Fatalf("results = %#v", detail.Results)
@@ -1727,6 +2570,12 @@ func TestRunPersistsPlanQuotaWindowsAndErrorDetail(t *testing.T) {
 	if windowsByID["monthly"].ResetLabel == "" || windowsByID["monthly"].ResetLabel == "-" {
 		t.Fatalf("monthly reset label = %q, want concrete reset label", windowsByID["monthly"].ResetLabel)
 	}
+	if windowsByID["monthly"].ResetAtMS != 1_782_895_966_000 || windowsByID["monthly"].ResetAccuracy != "exact" {
+		t.Fatalf("monthly normalized reset = %#v", windowsByID["monthly"])
+	}
+	if windowsByID["five-hour"].ResetAtMS <= 0 || windowsByID["five-hour"].ResetAccuracy != "derived" {
+		t.Fatalf("five-hour normalized reset = %#v", windowsByID["five-hour"])
+	}
 	if windowsByID["credits-weekly-0"].LabelParams["name"] != "credits" {
 		t.Fatalf("additional window params = %#v, want credits name", windowsByID["credits-weekly-0"].LabelParams)
 	}
@@ -1740,6 +2589,24 @@ func TestRunPersistsPlanQuotaWindowsAndErrorDetail(t *testing.T) {
 	}
 	if stored[0].ErrorKind != "http_status" || !strings.Contains(stored[0].ErrorDetail, "short window exhausted") {
 		t.Fatalf("stored error detail = %#v, want persisted HTTP detail", stored[0])
+	}
+	snapshots, err := quotasnapshotsvc.New(db).Query(context.Background(), quotasnapshotsvc.QueryRequest{
+		Accounts: []quotasnapshotsvc.QueryAccount{{
+			RowKey: "row-1", Provider: "codex", Account: quotasnapshotsvc.AccountTarget{
+				AuthFileSnapshot: "auth-a.json", AuthProviderSnapshot: "codex", AuthIndex: "auth-1",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("query inspection quota snapshots: %v", err)
+	}
+	if len(snapshots.Items) != 1 || len(snapshots.Items[0].Windows) != len(item.QuotaWindows) {
+		t.Fatalf("inspection quota snapshots = %#v", snapshots)
+	}
+	for _, window := range snapshots.Items[0].Windows {
+		if window.Source != "inspection" {
+			t.Fatalf("inspection snapshot source = %#v", window)
+		}
 	}
 }
 

@@ -415,6 +415,76 @@ func TestServerCompatStatusAuthAndCounts(t *testing.T) {
 	}
 }
 
+func TestServerCompatStatusIncludesSanitizedDerivedMaintenanceState(t *testing.T) {
+	cfg := testutil.NewConfig(t)
+	handler, db := newCompatHandler(t, cfg, nil)
+
+	cleanRR := testutil.Request(t, handler, http.MethodGet, "/status", "", testutil.AdminKey)
+	testutil.RequireStatus(t, cleanRR, http.StatusOK)
+	var cleanPayload struct {
+		DatabaseMaintenance struct {
+			Required            bool     `json:"required"`
+			PerformanceDegraded bool     `json:"performanceDegraded"`
+			DeferredIndexes     int      `json:"deferredIndexes"`
+			OfflineJobs         int      `json:"offlineJobs"`
+			Reasons             []string `json:"reasons"`
+			Command             string   `json:"command"`
+		} `json:"databaseMaintenance"`
+	}
+	testutil.DecodeJSON(t, cleanRR, &cleanPayload)
+	if cleanPayload.DatabaseMaintenance.Required ||
+		cleanPayload.DatabaseMaintenance.PerformanceDegraded ||
+		cleanPayload.DatabaseMaintenance.DeferredIndexes != 0 ||
+		cleanPayload.DatabaseMaintenance.OfflineJobs != 0 ||
+		len(cleanPayload.DatabaseMaintenance.Reasons) != 0 ||
+		cleanPayload.DatabaseMaintenance.Command != "" {
+		t.Fatalf("clean maintenance payload = %#v", cleanPayload.DatabaseMaintenance)
+	}
+
+	if _, err := db.InsertEvents(context.Background(), []usage.Event{compatEvent("maintenance-status-event", 2)}); err != nil {
+		t.Fatalf("insert maintenance status event: %v", err)
+	}
+	degradedRR := testutil.Request(t, handler, http.MethodGet, "/status", "", testutil.AdminKey)
+	testutil.RequireStatus(t, degradedRR, http.StatusOK)
+	var degradedPayload struct {
+		DatabaseMaintenance json.RawMessage `json:"databaseMaintenance"`
+	}
+	testutil.DecodeJSON(t, degradedRR, &degradedPayload)
+	var degraded struct {
+		Required            bool     `json:"required"`
+		PerformanceDegraded bool     `json:"performanceDegraded"`
+		DeferredIndexes     int      `json:"deferredIndexes"`
+		OfflineJobs         int      `json:"offlineJobs"`
+		Reasons             []string `json:"reasons"`
+		Command             string   `json:"command"`
+	}
+	if err := json.Unmarshal(degradedPayload.DatabaseMaintenance, &degraded); err != nil {
+		t.Fatalf("decode maintenance payload: %v", err)
+	}
+	if !degraded.Required || !degraded.PerformanceDegraded || degraded.DeferredIndexes == 0 || degraded.Command != "cleanup-derived" {
+		t.Fatalf("degraded maintenance payload = %#v", degraded)
+	}
+	maintenanceJSON := strings.ToLower(string(degradedPayload.DatabaseMaintenance))
+	for _, forbidden := range []string{"idx_", "create index", "usage_monitoring_event_projection", strings.ToLower(cfg.DBPath)} {
+		if forbidden != "" && strings.Contains(maintenanceJSON, forbidden) {
+			t.Fatalf("maintenance payload leaks %q: %s", forbidden, maintenanceJSON)
+		}
+	}
+
+	boundedRR := testutil.Request(t, handler, http.MethodGet, "/status?scope=database-maintenance", "", testutil.AdminKey)
+	testutil.RequireStatus(t, boundedRR, http.StatusOK)
+	var boundedPayload map[string]json.RawMessage
+	testutil.DecodeJSON(t, boundedRR, &boundedPayload)
+	if len(boundedPayload) != 1 || boundedPayload["databaseMaintenance"] == nil {
+		t.Fatalf("bounded maintenance payload = %s", boundedRR.Body.String())
+	}
+	for _, forbidden := range []string{"dbPath", "events", "deadLetters", "dataMigration", "database"} {
+		if _, found := boundedPayload[forbidden]; found {
+			t.Fatalf("bounded maintenance payload includes %q: %s", forbidden, boundedRR.Body.String())
+		}
+	}
+}
+
 func TestServerCompatStatusIncludesDatabaseMaintenanceSnapshot(t *testing.T) {
 	cfg := testutil.NewConfig(t)
 	db := testutil.NewStore(t, cfg)
@@ -780,6 +850,17 @@ func TestServerCompatProxyRoutes(t *testing.T) {
 	}
 	if reloadReq.Authorization != "Bearer management-key" || reloadReq.Body != `{"force":true}` {
 		t.Fatalf("reload proxy request = %#v", reloadReq)
+	}
+
+	apiCallBody := `{"method":"GET","url":"https://api.example.com/v1/models","proxy_url":"socks5h://proxy.example:1080"}`
+	apiCallRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/api-call", apiCallBody, testutil.AdminKey)
+	testutil.RequireStatus(t, apiCallRR, http.StatusOK)
+	apiCallReq, ok := cpa.LastRequest("/v0/management/api-call")
+	if !ok {
+		t.Fatal("CPA mock did not receive /v0/management/api-call")
+	}
+	if apiCallReq.Authorization != "Bearer management-key" || apiCallReq.Body != apiCallBody {
+		t.Fatalf("api-call proxy request = %#v", apiCallReq)
 	}
 
 	modelsReq := httptest.NewRequest(http.MethodGet, "/v1/models?limit=20", nil)

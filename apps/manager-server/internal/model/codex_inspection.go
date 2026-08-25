@@ -139,43 +139,55 @@ func NormalizeCodexInspectionRunStatus(status string) string {
 }
 
 type CodexInspectionQuotaWindow struct {
-	ID                 string         `json:"id"`
-	LabelKey           string         `json:"labelKey"`
-	LabelParams        map[string]any `json:"labelParams,omitempty"`
-	UsedPercent        *float64       `json:"usedPercent,omitempty"`
-	ResetLabel         string         `json:"resetLabel"`
-	LimitWindowSeconds *float64       `json:"limitWindowSeconds,omitempty"`
+	ID                    string                          `json:"id"`
+	LabelKey              string                          `json:"labelKey"`
+	LabelParams           map[string]any                  `json:"labelParams,omitempty"`
+	UsedPercent           *float64                        `json:"usedPercent,omitempty"`
+	ResetLabel            string                          `json:"resetLabel"`
+	ResetAtMS             int64                           `json:"resetAtMs,omitempty"`
+	ResetAccuracy         string                          `json:"resetAccuracy,omitempty"`
+	LimitWindowSeconds    *float64                        `json:"limitWindowSeconds,omitempty"`
+	ModelScope            *CodexInspectionQuotaModelScope `json:"modelScope,omitempty"`
+	ProviderWindowAliases []string                        `json:"providerWindowAliases,omitempty"`
+}
+
+type CodexInspectionQuotaModelScope struct {
+	Kind     string   `json:"kind"`
+	Key      string   `json:"key,omitempty"`
+	Models   []string `json:"models,omitempty"`
+	Complete bool     `json:"complete"`
 }
 
 type CodexInspectionResult struct {
-	ID                  int64                        `json:"id"`
-	RunID               int64                        `json:"runId"`
-	AccountKey          string                       `json:"accountKey"`
-	FileName            string                       `json:"fileName"`
-	DisplayAccount      string                       `json:"displayAccount"`
-	AccountSnapshot     string                       `json:"accountSnapshot,omitempty"`
-	AuthIndex           string                       `json:"authIndex,omitempty"`
-	AccountID           string                       `json:"accountId,omitempty"`
-	Provider            string                       `json:"provider"`
-	Disabled            bool                         `json:"disabled"`
-	Status              string                       `json:"status,omitempty"`
-	State               string                       `json:"state,omitempty"`
-	Action              string                       `json:"action"`
-	ActionReason        string                       `json:"actionReason"`
-	ActionStatus        string                       `json:"actionStatus,omitempty"`
-	ExecutedAction      string                       `json:"executedAction,omitempty"`
-	ActionError         string                       `json:"actionError,omitempty"`
-	StatusCode          *int                         `json:"statusCode,omitempty"`
-	UsedPercent         *float64                     `json:"usedPercent,omitempty"`
-	IsQuota             bool                         `json:"isQuota"`
-	AutoRecoverEligible bool                         `json:"autoRecoverEligible"`
-	Error               string                       `json:"error,omitempty"`
-	PlanType            string                       `json:"planType,omitempty"`
-	QuotaWindows        []CodexInspectionQuotaWindow `json:"quotaWindows,omitempty"`
-	QuotaWindowsJSON    string                       `json:"-"`
-	ErrorKind           string                       `json:"errorKind,omitempty"`
-	ErrorDetail         string                       `json:"errorDetail,omitempty"`
-	CreatedAtMS         int64                        `json:"createdAtMs"`
+	ID                     int64                        `json:"id"`
+	RunID                  int64                        `json:"runId"`
+	AccountKey             string                       `json:"accountKey"`
+	FileName               string                       `json:"fileName"`
+	DisplayAccount         string                       `json:"displayAccount"`
+	AccountSnapshot        string                       `json:"accountSnapshot,omitempty"`
+	AuthIndex              string                       `json:"authIndex,omitempty"`
+	AccountID              string                       `json:"accountId,omitempty"`
+	Provider               string                       `json:"provider"`
+	Disabled               bool                         `json:"disabled"`
+	Status                 string                       `json:"status,omitempty"`
+	State                  string                       `json:"state,omitempty"`
+	Action                 string                       `json:"action"`
+	ActionReason           string                       `json:"actionReason"`
+	ActionStatus           string                       `json:"actionStatus,omitempty"`
+	ExecutedAction         string                       `json:"executedAction,omitempty"`
+	ActionError            string                       `json:"actionError,omitempty"`
+	StatusCode             *int                         `json:"statusCode,omitempty"`
+	UsedPercent            *float64                     `json:"usedPercent,omitempty"`
+	IsQuota                bool                         `json:"isQuota"`
+	AutoRecoverEligible    bool                         `json:"autoRecoverEligible"`
+	Error                  string                       `json:"error,omitempty"`
+	PlanType               string                       `json:"planType,omitempty"`
+	QuotaWindows           []CodexInspectionQuotaWindow `json:"quotaWindows,omitempty"`
+	QuotaWindowsJSON       string                       `json:"-"`
+	QuotaInventoryObserved bool                         `json:"quotaInventoryObserved"`
+	ErrorKind              string                       `json:"errorKind,omitempty"`
+	ErrorDetail            string                       `json:"errorDetail,omitempty"`
+	CreatedAtMS            int64                        `json:"createdAtMs"`
 }
 
 type CodexInspectionDisableOwnership struct {
@@ -534,14 +546,20 @@ func MarshalCodexInspectionQuotaWindows(windows []CodexInspectionQuotaWindow) st
 }
 
 func UnmarshalCodexInspectionQuotaWindows(raw string) []CodexInspectionQuotaWindow {
-	if strings.TrimSpace(raw) == "" {
-		return nil
+	windows, _ := ParseCodexInspectionQuotaWindows(raw)
+	return windows
+}
+
+func ParseCodexInspectionQuotaWindows(raw string) ([]CodexInspectionQuotaWindow, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, false
 	}
 	var windows []CodexInspectionQuotaWindow
-	if err := json.Unmarshal([]byte(raw), &windows); err != nil {
-		return nil
+	if err := json.Unmarshal([]byte(trimmed), &windows); err != nil || windows == nil {
+		return nil, false
 	}
-	return windows
+	return windows, true
 }
 
 func CodexInspectionTriggerKey(now time.Time, cfg ManagerCodexInspectionConfig) string {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usage"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
 func TestMigrationCreatesAccountHistoryRollupTables(t *testing.T) {
@@ -50,7 +52,9 @@ func TestCatchUpAccountHistoryAggregatesByCheckpoint(t *testing.T) {
 		t.Fatalf("first catch-up = %#v", first)
 	}
 
-	aliceRows, err := repo.AccountHistoryRows(ctx, []string{"alice@example.com"})
+	aliceKey := rollupTestAccountKey("alice@example.com", "", "auth-a")
+	teamBKey := rollupTestAccountKey("", "team-b", "auth-b")
+	aliceRows, err := repo.AccountHistoryRows(ctx, []string{aliceKey})
 	if err != nil {
 		t.Fatalf("query alice rows: %v", err)
 	}
@@ -83,7 +87,7 @@ func TestCatchUpAccountHistoryAggregatesByCheckpoint(t *testing.T) {
 		t.Fatalf("third catch-up = %#v", third)
 	}
 
-	rows, err := repo.AccountHistoryRows(ctx, []string{"alice@example.com", "team-b"})
+	rows, err := repo.AccountHistoryRows(ctx, []string{aliceKey, teamBKey})
 	if err != nil {
 		t.Fatalf("query rows: %v", err)
 	}
@@ -91,10 +95,10 @@ func TestCatchUpAccountHistoryAggregatesByCheckpoint(t *testing.T) {
 		t.Fatalf("rows = %#v", rows)
 	}
 	for _, row := range rows {
-		if row.AccountKey == "alice@example.com" && row.Calls != 2 {
+		if row.AccountKey == aliceKey && row.Calls != 2 {
 			t.Fatalf("alice was double-counted: %#v", row)
 		}
-		if row.AccountKey == "team-b" && (row.Calls != 1 || row.BillingModel != "alias-b") {
+		if row.AccountKey == teamBKey && (row.Calls != 1 || row.BillingModel != "alias-b") {
 			t.Fatalf("team-b row = %#v", row)
 		}
 	}
@@ -104,6 +108,253 @@ func TestCatchUpAccountHistoryAggregatesByCheckpoint(t *testing.T) {
 	}
 	if checkpoint.LastEventID != 3 {
 		t.Fatalf("checkpoint = %#v", checkpoint)
+	}
+}
+
+func TestCatchUpAccountHistoryDistinguishesRebuildFromIncrementalCatchUp(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	fixtures := []usage.Event{
+		rollupTestEvent("rollup-mode-1", 1_700_000_001_000, "model-a", "", "alice@example.com", "", "auth-a", false, 1, 1, 0, 0, 0, 0, 2),
+		rollupTestEvent("rollup-mode-2", 1_700_000_002_000, "model-a", "", "alice@example.com", "", "auth-a", false, 1, 1, 0, 0, 0, 0, 2),
+	}
+	if _, err := events.InsertBatch(ctx, fixtures); err != nil {
+		t.Fatalf("insert incremental fixtures: %v", err)
+	}
+	first, err := repo.CatchUpAccountHistory(ctx, 1, 1_700_000_010_000)
+	if err != nil {
+		t.Fatalf("incremental catch-up: %v", err)
+	}
+	if first.Rebuilt || !first.Pending {
+		t.Fatalf("incremental catch-up = %#v", first)
+	}
+	if _, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_011_000); err != nil {
+		t.Fatalf("finish incremental catch-up: %v", err)
+	}
+
+	for _, statement := range []string{
+		`delete from usage_account_model_rollups`,
+		`delete from usage_rollup_checkpoints where name = 'account_history'`,
+		`insert into usage_rollup_rebuild_state (name, target_event_id, updated_at_ms)
+			values ('account_history', 2, 0)
+			on conflict(name) do update set target_event_id = excluded.target_event_id, updated_at_ms = 0`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("prepare rebuild fixture: %v", err)
+		}
+	}
+	rebuildFirst, err := repo.CatchUpAccountHistory(ctx, 1, 1_700_000_020_000)
+	if err != nil {
+		t.Fatalf("first rebuild batch: %v", err)
+	}
+	if !rebuildFirst.Rebuilt || rebuildFirst.RebuildTargetEventID != 2 || !rebuildFirst.Pending {
+		t.Fatalf("first rebuild batch = %#v", rebuildFirst)
+	}
+	rebuildSecond, err := repo.CatchUpAccountHistory(ctx, 1, 1_700_000_021_000)
+	if err != nil {
+		t.Fatalf("second rebuild batch: %v", err)
+	}
+	if !rebuildSecond.Rebuilt || rebuildSecond.RebuildTargetEventID != 2 || rebuildSecond.Pending {
+		t.Fatalf("second rebuild batch = %#v", rebuildSecond)
+	}
+	var rebuildStateRows int
+	if err := db.QueryRow(`select count(*) from usage_rollup_rebuild_state where name = 'account_history'`).Scan(&rebuildStateRows); err != nil {
+		t.Fatalf("count completed rebuild state: %v", err)
+	}
+	if rebuildStateRows != 0 {
+		t.Fatalf("completed rebuild state rows = %d, want 0", rebuildStateRows)
+	}
+
+	third := rollupTestEvent("rollup-mode-3", 1_700_000_003_000, "model-a", "", "alice@example.com", "", "auth-a", false, 1, 1, 0, 0, 0, 0, 2)
+	if _, err := events.InsertBatch(ctx, []usage.Event{third}); err != nil {
+		t.Fatalf("insert post-rebuild event: %v", err)
+	}
+	postRebuild, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_030_000)
+	if err != nil {
+		t.Fatalf("post-rebuild catch-up: %v", err)
+	}
+	if postRebuild.Rebuilt || postRebuild.Pending || postRebuild.LastEventID != 3 {
+		t.Fatalf("post-rebuild catch-up = %#v", postRebuild)
+	}
+}
+
+func TestAccountHistoryRowsRemainCompleteDuringRebuildAndRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "account-history-rebuild.sqlite")
+	db, err := sqliterepo.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	baseMS := int64(1_700_000_000_000)
+
+	first := rollupTestEvent("account-fallback-1", baseMS+1_000, "model-a", "resolved-a", "alice@example.com", "", "auth-a", false, 272_001, 30, 5, 100, 20, 10, 272_036)
+	second := rollupTestEvent("account-fallback-2", baseMS+2_000, "model-a", "resolved-a", "alice@example.com", "Alice", "auth-a", true, 10, 20, 3, 0, 0, 0, 33)
+	third := rollupTestEvent("account-fallback-3", baseMS+3_000, "model-b", "resolved-b", "alice@example.com", "", "auth-a", false, 7, 8, 1, 0, 0, 0, 16)
+	third.ServiceTier = "priority"
+	if _, err := events.InsertBatch(ctx, []usage.Event{first, second, third}); err != nil {
+		t.Fatalf("insert rebuild fixtures: %v", err)
+	}
+	if _, err := db.Exec(`delete from usage_account_model_rollups`); err != nil {
+		t.Fatalf("clear account rollups: %v", err)
+	}
+	scheduleRollupRebuildForTest(t, db, AccountHistoryCheckpointName, 3)
+
+	accountKey := rollupTestAccountKey("alice@example.com", "", "auth-a")
+	expected, err := repo.AccountHistoryRows(ctx, []string{accountKey})
+	if err != nil {
+		t.Fatalf("read raw-backed account history: %v", err)
+	}
+	if len(expected) != 2 {
+		t.Fatalf("raw-backed rows = %#v", expected)
+	}
+	byModel := make(map[string]AccountHistoryRow, len(expected))
+	for _, row := range expected {
+		byModel[row.Model] = row
+	}
+	modelA := byModel["model-a"]
+	if modelA.Calls != 2 || modelA.SuccessCalls != 1 || modelA.FailureCalls != 1 ||
+		modelA.InputTokens != 272_011 || modelA.OutputTokens != 50 || modelA.ReasoningTokens != 8 ||
+		modelA.CachedTokens != 70 || modelA.CacheReadTokens != 20 || modelA.CacheCreationTokens != 10 ||
+		modelA.LongInputTokens != 272_001 || modelA.LongOutputTokens != 30 || modelA.LongCachedTokens != 70 ||
+		modelA.LongCacheReadTokens != 20 || modelA.LongCacheCreationTokens != 10 ||
+		modelA.FirstSeenMS != baseMS+1_000 || modelA.LastSeenMS != baseMS+2_000 {
+		t.Fatalf("raw-backed model-a row = %#v", modelA)
+	}
+	if row := byModel["model-b"]; row.Calls != 1 || row.ServiceTier != "priority" || row.TotalTokens != 16 {
+		t.Fatalf("raw-backed model-b row = %#v", row)
+	}
+
+	firstBatch, err := repo.CatchUpAccountHistory(ctx, 1, baseMS+10_000)
+	if err != nil {
+		t.Fatalf("first rebuild batch: %v", err)
+	}
+	if !firstBatch.Rebuilt || !firstBatch.Pending || firstBatch.LastEventID != 1 {
+		t.Fatalf("first rebuild batch = %#v", firstBatch)
+	}
+	partial, err := repo.AccountHistoryRows(ctx, []string{accountKey})
+	if err != nil {
+		t.Fatalf("read partially rebuilt account history: %v", err)
+	}
+	assertEquivalentAccountHistoryRows(t, partial, expected)
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close interrupted database: %v", err)
+	}
+	db, err = sqliterepo.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen interrupted database: %v", err)
+	}
+	repo = New(db)
+	restarted, err := repo.AccountHistoryRows(ctx, []string{accountKey})
+	if err != nil {
+		t.Fatalf("read account history after restart: %v", err)
+	}
+	assertEquivalentAccountHistoryRows(t, restarted, expected)
+
+	for attempt := 0; attempt < 4; attempt++ {
+		result, err := repo.CatchUpAccountHistory(ctx, 1, baseMS+20_000+int64(attempt))
+		if err != nil {
+			t.Fatalf("resume rebuild batch %d: %v", attempt, err)
+		}
+		if !result.Pending {
+			break
+		}
+	}
+	completed, err := repo.AccountHistoryRows(ctx, []string{accountKey})
+	if err != nil {
+		t.Fatalf("read completed account history: %v", err)
+	}
+	assertEquivalentAccountHistoryRows(t, completed, expected)
+}
+
+func TestCatchUpAccountHistoryUsesAnalyticsModel(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	low := rollupTestEvent("account-canonical-low", 1_700_000_001_000, "deepseek-v4-flash(low)", "", "alice@example.com", "", "auth-a", false, 1, 2, 0, 0, 0, 0, 3)
+	max := rollupTestEvent("account-canonical-max", 1_700_000_002_000, "deepseek-v4-flash(max)", "", "alice@example.com", "", "auth-a", false, 4, 5, 0, 0, 0, 0, 9)
+	unknown := rollupTestEvent("account-canonical-unknown", 1_700_000_003_000, "deepseek-v4-flash(region-us)", "", "alice@example.com", "", "auth-a", false, 6, 7, 0, 0, 0, 0, 13)
+	if _, err := events.InsertBatch(ctx, []usage.Event{low, max, unknown}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	if _, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_010_000); err != nil {
+		t.Fatalf("catch up: %v", err)
+	}
+	rows, err := repo.AccountHistoryRows(ctx, []string{rollupTestAccountKey("alice@example.com", "", "auth-a")})
+	if err != nil {
+		t.Fatalf("query rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %#v, want canonical and unknown rows", rows)
+	}
+	byModel := make(map[string]AccountHistoryRow, len(rows))
+	for _, row := range rows {
+		byModel[row.Model] = row
+	}
+	if byModel["deepseek-v4-flash"].Calls != 2 || byModel["deepseek-v4-flash"].TotalTokens != 12 {
+		t.Fatalf("canonical row = %#v", byModel["deepseek-v4-flash"])
+	}
+	if byModel["deepseek-v4-flash(region-us)"].Calls != 1 {
+		t.Fatalf("unknown row = %#v", byModel["deepseek-v4-flash(region-us)"])
+	}
+}
+
+func TestCatchUpAccountHistorySeparatesAnalyticsModelsSharingBillingModel(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	first := rollupTestEvent("account-shared-billing-a", 1_700_000_001_000, "model-a", "resolved-x", "alice@example.com", "", "auth-a", false, 10, 1, 0, 0, 0, 0, 11)
+	second := rollupTestEvent("account-shared-billing-b", 1_700_000_002_000, "model-b", "resolved-x", "alice@example.com", "", "auth-a", false, 20, 2, 0, 0, 0, 0, 22)
+	if _, err := events.InsertBatch(ctx, []usage.Event{first, second}); err != nil {
+		t.Fatalf("insert events: %v", err)
+	}
+	if _, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_010_000); err != nil {
+		t.Fatalf("catch up: %v", err)
+	}
+	rows, err := repo.AccountHistoryRows(ctx, []string{rollupTestAccountKey("alice@example.com", "", "auth-a")})
+	if err != nil {
+		t.Fatalf("query rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %#v, want one row per analytics model", rows)
+	}
+	byModel := make(map[string]AccountHistoryRow, len(rows))
+	for _, row := range rows {
+		byModel[row.Model] = row
+	}
+	if row := byModel["model-a"]; row.BillingModel != "resolved-x" || row.Calls != 1 || row.TotalTokens != 11 {
+		t.Fatalf("model-a row = %#v", row)
+	}
+	if row := byModel["model-b"]; row.BillingModel != "resolved-x" || row.Calls != 1 || row.TotalTokens != 22 {
+		t.Fatalf("model-b row = %#v", row)
+	}
+}
+
+func TestCatchUpAccountHistoryPreservesAnalyticsModelWhitespace(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+	event := rollupTestEvent("account-model-whitespace", 1_700_000_001_000, " custom-model(max)", "", "alice@example.com", "", "auth-a", false, 10, 1, 0, 0, 0, 0, 11)
+	if _, err := events.InsertBatch(ctx, []usage.Event{event}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+	if _, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_010_000); err != nil {
+		t.Fatalf("catch up: %v", err)
+	}
+	rows, err := repo.AccountHistoryRows(ctx, []string{rollupTestAccountKey("alice@example.com", "", "auth-a")})
+	if err != nil {
+		t.Fatalf("query rows: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Model != " custom-model" || rows[0].BillingModel != " custom-model" {
+		t.Fatalf("rows = %#v, want analytics model whitespace preserved", rows)
 	}
 }
 
@@ -127,7 +378,9 @@ func TestRollupsPreserveLongContextTokenBuckets(t *testing.T) {
 		t.Fatalf("dashboard catch-up: %v", err)
 	}
 
-	accountRows, err := repo.AccountHistoryRows(ctx, []string{"alice@example.com"})
+	accountRows, err := repo.AccountHistoryRows(ctx, []string{
+		rollupTestAccountKey("alice@example.com", "", "auth-a"),
+	})
 	if err != nil || len(accountRows) != 1 {
 		t.Fatalf("account rows = %#v, err = %v", accountRows, err)
 	}
@@ -225,7 +478,9 @@ func TestCatchUpAccountHistorySerializesConcurrentCalls(t *testing.T) {
 		}
 	}
 
-	rows, err := repo.AccountHistoryRows(ctx, []string{"concurrent@example.com"})
+	rows, err := repo.AccountHistoryRows(ctx, []string{
+		rollupTestAccountKey("concurrent@example.com", "", "auth-a"),
+	})
 	if err != nil {
 		t.Fatalf("query rows: %v", err)
 	}
@@ -299,12 +554,52 @@ func TestCatchUpAccountHistoryWaitsForConcurrentWriter(t *testing.T) {
 		t.Fatalf("catch-up result = %#v, latest event id = %d", outcome.result, latestEventID)
 	}
 
-	rows, err := repo.AccountHistoryRows(ctx, []string{"lock-test-account"})
+	rows, err := repo.AccountHistoryRows(ctx, []string{
+		rollupTestAccountKey("lock-test-account", "", "auth-a"),
+	})
 	if err != nil {
 		t.Fatalf("query account history rows: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Calls != 1 || rows[0].TotalTokens != 3 {
 		t.Fatalf("account history rows = %#v", rows)
+	}
+}
+
+func TestCatchUpAccountHistorySeparatesSharedAccountByAuthIndex(t *testing.T) {
+	db := newRollupTestDB(t)
+	ctx := context.Background()
+	events := usageevent.New(db)
+	repo := New(db)
+
+	first := rollupTestEvent("shared-account-a", 1_700_000_001_000, "gpt-a", "", "same@example.com", "", "auth-a", false, 10, 5, 0, 0, 0, 0, 15)
+	first.AuthFileSnapshot = "shared.json"
+	second := rollupTestEvent("shared-account-b", 1_700_000_002_000, "gpt-a", "", "same@example.com", "", "auth-b", false, 20, 10, 0, 0, 0, 0, 30)
+	second.AuthFileSnapshot = "shared.json"
+	if _, err := events.InsertBatch(ctx, []usage.Event{first, second}); err != nil {
+		t.Fatalf("insert shared-account events: %v", err)
+	}
+	if _, err := repo.CatchUpAccountHistory(ctx, 10, 1_700_000_010_000); err != nil {
+		t.Fatalf("catch up shared-account history: %v", err)
+	}
+
+	firstKey := rollupTestFileAccountKey("shared.json", "same@example.com", "auth-a")
+	secondKey := rollupTestFileAccountKey("shared.json", "same@example.com", "auth-b")
+	rows, err := repo.AccountHistoryRows(ctx, []string{secondKey, firstKey})
+	if err != nil {
+		t.Fatalf("query shared-account rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("shared-account rows = %#v", rows)
+	}
+	byKey := make(map[string]AccountHistoryRow, len(rows))
+	for _, row := range rows {
+		byKey[row.AccountKey] = row
+	}
+	if byKey[firstKey].Calls != 1 || byKey[firstKey].TotalTokens != 15 {
+		t.Fatalf("first credential rollup = %#v", byKey[firstKey])
+	}
+	if byKey[secondKey].Calls != 1 || byKey[secondKey].TotalTokens != 30 {
+		t.Fatalf("second credential rollup = %#v", byKey[secondKey])
 	}
 }
 
@@ -362,5 +657,59 @@ func rollupTestEvent(
 		TotalTokens:          totalTokens,
 		Failed:               failed,
 		CreatedAtMS:          timestampMS,
+	}
+}
+
+func rollupTestAccountKey(accountSnapshot, authLabelSnapshot, authIndex string) string {
+	key, valid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthIndex:            authIndex,
+		AuthProviderSnapshot: "openai",
+		AccountSnapshot:      accountSnapshot,
+		AuthLabelSnapshot:    authLabelSnapshot,
+		Source:               accountSnapshot,
+	})
+	if !valid {
+		panic("invalid rollup test identity")
+	}
+	return key
+}
+
+func rollupTestFileAccountKey(authFileSnapshot, accountSnapshot, authIndex string) string {
+	key, valid := usageidentity.AccountKey(usageidentity.Fields{
+		AuthFileSnapshot:     authFileSnapshot,
+		AuthIndex:            authIndex,
+		AuthProviderSnapshot: "openai",
+		AccountSnapshot:      accountSnapshot,
+	})
+	if !valid {
+		panic("invalid rollup test file identity")
+	}
+	return key
+}
+
+func scheduleRollupRebuildForTest(t *testing.T, db *sql.DB, name string, targetEventID int64) {
+	t.Helper()
+	if _, err := db.Exec(`delete from usage_rollup_checkpoints where name = ?`, name); err != nil {
+		t.Fatalf("delete %s checkpoint: %v", name, err)
+	}
+	if _, err := db.Exec(`insert into usage_rollup_rebuild_state (name, target_event_id, updated_at_ms)
+		values (?, ?, 0)
+		on conflict(name) do update set target_event_id = excluded.target_event_id, updated_at_ms = 0`, name, targetEventID); err != nil {
+		t.Fatalf("schedule %s rebuild: %v", name, err)
+	}
+}
+
+func assertEquivalentAccountHistoryRows(t *testing.T, got, want []AccountHistoryRow) {
+	t.Helper()
+	got = append([]AccountHistoryRow(nil), got...)
+	want = append([]AccountHistoryRow(nil), want...)
+	for index := range got {
+		got[index].UpdatedAtMS = 0
+	}
+	for index := range want {
+		want[index].UpdatedAtMS = 0
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("account history rows = %#v, want %#v", got, want)
 	}
 }

@@ -1,8 +1,11 @@
 package usagemonitoring
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 
+	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	monitoringrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usagemonitoring"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
@@ -70,5 +73,29 @@ func TestEventProjectionPreferenceKeepsTimeOnlyPagesOnTimestampIndex(t *testing.
 	base.Models = []string{"gpt-a"}
 	if !monitoringrepo.PrefersEventProjection(base) {
 		t.Fatal("dimension-filtered event request did not prefer the projection")
+	}
+}
+
+func TestAccountWindowStatsReturnsUnavailableForProjectionSchemaMismatch(t *testing.T) {
+	ctx := context.Background()
+	sqlDB, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	db := store.New(sqlDB)
+	if _, err := sqlDB.ExecContext(ctx, `update usage_monitoring_rollup_state set schema_version = 0 where rollup_name = ?`, monitoringrepo.ProjectionRollupName); err != nil {
+		t.Fatalf("invalidate projection state: %v", err)
+	}
+
+	rows, available := New(db).AccountWindowStats(ctx, []store.AccountWindowUsageQuery{{
+		RequestIndex:     0,
+		FromMS:           1,
+		ToMS:             2,
+		AuthFileSnapshot: "first.json",
+		AuthIndex:        "auth-1",
+	}})
+	if available || rows != nil {
+		t.Fatalf("account window projection rows = %#v available=%v", rows, available)
 	}
 }

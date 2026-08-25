@@ -347,6 +347,59 @@ func BenchmarkUsageAnalyticsIncludeProfiles(b *testing.B) {
 	}
 }
 
+func BenchmarkAccountWindowUsageProjection(b *testing.B) {
+	db, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
+	if err != nil {
+		b.Fatalf("open store: %v", err)
+	}
+	b.Cleanup(func() { _ = db.Close() })
+
+	ctx := context.Background()
+	fromMS := int64(1_800_000_000_000)
+	toMS := fromMS + 30*24*60*60*1000
+	eventCount := monitoringBenchmarkEventCount(100_000)
+	saveMonitoringBenchmarkPrices(b, ctx, db)
+	insertMonitoringBenchmarkEvents(b, ctx, db, fromMS, toMS, eventCount)
+	catchUpMonitoringBenchmarkDerivedRollups(b, ctx, db, toMS)
+
+	windows := make([]AccountWindowUsageTarget, 0, maxAccountWindowUsageItems)
+	for accountIndex := range 100 {
+		for overlapIndex := range 4 {
+			windowFromMS := fromMS + int64(overlapIndex)*5*24*60*60*1000
+			windows = append(windows, AccountWindowUsageTarget{
+				RowKey:                fmt.Sprintf("account-%03d.json\x00auth-%03d", accountIndex, accountIndex),
+				WindowKey:             fmt.Sprintf("overlap-%d", overlapIndex),
+				FromMS:                windowFromMS,
+				ToMS:                  windowFromMS + 15*24*60*60*1000,
+				AccountSnapshot:       fmt.Sprintf("account-%03d@example.com", accountIndex),
+				AuthFileSnapshot:      fmt.Sprintf("account-%03d.json", accountIndex),
+				AuthProviderSnapshot:  "codex",
+				AuthProjectIDSnapshot: fmt.Sprintf("project-%02d", accountIndex%10),
+				AuthIndex:             fmt.Sprintf("auth-%03d", accountIndex),
+				Source:                fmt.Sprintf("account-%03d.json", accountIndex),
+			})
+		}
+	}
+	service := New(db)
+	request := AccountWindowUsageRequest{Windows: windows}
+	response, err := service.AccountWindowUsage(ctx, request)
+	if err != nil {
+		b.Fatalf("warm account window usage: %v", err)
+	}
+	if len(response.Items) != len(windows) {
+		b.Fatalf("warm account window items = %d, want %d", len(response.Items), len(windows))
+	}
+
+	b.ReportMetric(float64(eventCount), "events")
+	b.ReportMetric(float64(len(windows)), "windows")
+	b.ResetTimer()
+	for range b.N {
+		if _, err := service.AccountWindowUsage(ctx, request); err != nil {
+			b.Fatalf("account window usage: %v", err)
+		}
+	}
+}
+
 func BenchmarkUsageMonitoringHeaderSnapshots(b *testing.B) {
 	db, err := store.Open(filepath.Join(b.TempDir(), "usage.sqlite"))
 	if err != nil {

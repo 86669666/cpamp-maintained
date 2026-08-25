@@ -11,20 +11,28 @@ import zhCN from '@/i18n/locales/zh-CN.json';
 import zhTW from '@/i18n/locales/zh-TW.json';
 import type { MonitoringAccountQuotaTarget } from '@/features/monitoring/accountOverviewQuotaTargets';
 import type {
+  AccountQuotaEntry,
+  AccountQuotaState,
+} from '@/features/monitoring/components/accountOverviewPresentation';
+import type {
   MonitoringAccountRow,
   MonitoringApiKeyRow,
+  MonitoringEventRow,
 } from '@/features/monitoring/hooks/useMonitoringData';
 import {
   buildAccountOptions,
   buildApiKeyOptionsFromRows,
   buildChannelOptionsFromValues,
   buildAccountQuotaRefreshFailureEntry,
+  buildObservedCodexAccountQuotaEntry,
   buildMonitoringInitialStateFromQuery,
   buildModelOptionsFromValues,
   buildProviderOptionsFromValues,
+  buildSyncPriceModels,
   mergeObservedAccountQuotaEntry,
   mergeObservedAccountQuotaState,
   requestAccountQuota,
+  updateMonitoringAccountQuotaStateByRowId,
 } from './monitoringCenterPageModel';
 import { getDefaultMonitoringCenterUiState } from '@/features/monitoring/monitoringCenterUiState';
 
@@ -81,6 +89,24 @@ const t = ((key: string, options?: Record<string, unknown>) => {
   return value;
 }) as TFunction;
 
+describe('monitoringCenterPageModel price sync', () => {
+  it('syncs canonical and resolved identities while preserving saved suffix prices', () => {
+    const rows = [
+      {
+        model: 'deepseek-v4-flash',
+        requestedModel: 'deepseek-v4-flash(max)',
+        resolvedModel: 'resolved-deepseek-v4-flash',
+      },
+    ] as MonitoringEventRow[];
+
+    expect(
+      buildSyncPriceModels(rows, {
+        'deepseek-v4-flash(low)': { prompt: 1, completion: 2, cache: 0.5 },
+      })
+    ).toEqual(['deepseek-v4-flash', 'deepseek-v4-flash(low)', 'resolved-deepseek-v4-flash']);
+  });
+});
+
 const createTarget = (
   overrides: Partial<MonitoringAccountQuotaTarget>
 ): MonitoringAccountQuotaTarget => ({
@@ -96,6 +122,30 @@ const createTarget = (
   },
   accountId: overrides.accountId ?? null,
   planType: overrides.planType ?? null,
+});
+
+const createMergeAccountQuotaEntry = (
+  resetLabel: string,
+  resetAtMs: number | null,
+  resetAccuracy: AccountQuotaEntry['windows'][number]['resetAccuracy'] = 'unknown'
+): AccountQuotaEntry => ({
+  key: 'codex::merge::codex.json',
+  provider: 'codex',
+  providerLabel: 'Codex Quota',
+  authLabel: 'Auth',
+  fileName: 'codex.json',
+  planType: 'plus',
+  windows: [
+    {
+      id: 'monthly',
+      label: 'Monthly limit',
+      remainingPercent: 50,
+      resetLabel,
+      resetAtMs,
+      resetAccuracy,
+      usageLabel: 'Used 50%',
+    },
+  ],
 });
 
 const createAccountRow = (
@@ -245,6 +295,34 @@ describe('monitoringCenterPageModel filter options', () => {
       ).map((item) => item.value)
     ).toEqual(['all', 'auth:openai-auth']);
   });
+
+  it('renders same-email provider account options as distinct selectable scopes', () => {
+    const options = buildAccountOptions(
+      [
+        createAccountRow('same@example.com', {
+          id: 'codex-row',
+          provider: 'codex',
+          channels: ['Codex'],
+          filterValue: 'auth:codex-auth',
+        }),
+        createAccountRow('same@example.com', {
+          id: 'antigravity-row',
+          provider: 'antigravity',
+          channels: ['Antigravity'],
+          filterValue: 'auth:antigravity-auth',
+        }),
+      ],
+      'all',
+      t,
+      'full'
+    );
+
+    expect(options).toMatchObject([
+      { value: 'all' },
+      { value: 'auth:antigravity-auth', label: 'same@example.com / Antigravity' },
+      { value: 'auth:codex-auth', label: 'same@example.com / Codex' },
+    ]);
+  });
 });
 
 describe('monitoringCenterPageModel account quota', () => {
@@ -255,8 +333,47 @@ describe('monitoringCenterPageModel account quota', () => {
     vi.mocked(fetchXaiQuota).mockReset();
   });
 
+  it('updates quota refresh state only for the selected provider-scoped row id', () => {
+    const antigravityState: AccountQuotaState = {
+      status: 'error',
+      targetKey: 'antigravity-target',
+      entries: [],
+      error: 'antigravity-error',
+      failedAtMs: 100,
+      lastRefreshedAt: 90,
+    };
+    const states: Record<string, AccountQuotaState> = {
+      'codex-row': {
+        status: 'success',
+        targetKey: 'codex-target',
+        entries: [],
+        error: '',
+        lastRefreshedAt: 80,
+      },
+      'antigravity-row': antigravityState,
+    };
+    const codexLoadingState: AccountQuotaState = {
+      status: 'loading',
+      targetKey: 'codex-target',
+      entries: [],
+      error: '',
+    };
+
+    const next = updateMonitoringAccountQuotaStateByRowId(states, 'codex-row', codexLoadingState);
+
+    expect(next['codex-row']).toBe(codexLoadingState);
+    expect(next['antigravity-row']).toBe(antigravityState);
+    expect(next['antigravity-row']).toMatchObject({
+      status: 'error',
+      error: 'antigravity-error',
+      failedAtMs: 100,
+      lastRefreshedAt: 90,
+    });
+  });
+
   it('maps Claude usage windows into account quota entries', async () => {
     vi.mocked(fetchClaudeQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
       windows: [
         {
           id: 'five-hour',
@@ -264,6 +381,8 @@ describe('monitoringCenterPageModel account quota', () => {
           labelKey: 'claude_quota.five_hour',
           usedPercent: 40,
           resetLabel: '05/20 12:00',
+          resetAtMs: Date.parse('2026-05-20T12:00:00Z'),
+          resetAccuracy: 'exact',
         },
         {
           id: 'weekly-scoped-fable%205%20max',
@@ -293,6 +412,8 @@ describe('monitoringCenterPageModel account quota', () => {
           label: '5-hour limit',
           remainingPercent: 60,
           resetLabel: '05/20 12:00',
+          resetAtMs: Date.parse('2026-05-20T12:00:00Z'),
+          resetAccuracy: 'exact',
         },
         {
           id: 'weekly-scoped-fable%205%20max',
@@ -306,6 +427,7 @@ describe('monitoringCenterPageModel account quota', () => {
 
   it('maps Codex monthly quota windows into account quota entries', async () => {
     vi.mocked(fetchCodexQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
       planType: 'free',
       subscriptionActiveUntil: null,
       rateLimitResetCreditsAvailableCount: null,
@@ -318,6 +440,8 @@ describe('monitoringCenterPageModel account quota', () => {
           labelKey: 'codex_quota.monthly_window',
           usedPercent: 5,
           resetLabel: '06/30 12:00',
+          resetAtMs: Date.parse('2026-06-30T12:00:00Z'),
+          resetAccuracy: 'exact',
           limitWindowSeconds: 2_592_000,
         },
       ],
@@ -343,6 +467,8 @@ describe('monitoringCenterPageModel account quota', () => {
           label: 'Monthly limit',
           remainingPercent: 95,
           resetLabel: '06/30 12:00',
+          resetAtMs: Date.parse('2026-06-30T12:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: '1.5d / 30d used',
         },
       ],
@@ -350,7 +476,7 @@ describe('monitoringCenterPageModel account quota', () => {
   });
 
   it('merges observed Codex account quota without dropping existing API-only windows', () => {
-    const activeEntry = {
+    const activeEntry: AccountQuotaEntry = {
       key: 'codex::2::codex.json',
       provider: 'codex' as const,
       providerLabel: 'Codex Quota',
@@ -364,6 +490,8 @@ describe('monitoringCenterPageModel account quota', () => {
           label: 'Monthly limit',
           remainingPercent: 95,
           resetLabel: '06/30 12:00',
+          resetAtMs: Date.parse('2026-06-30T12:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: '1.5d / 30d used',
         },
         {
@@ -371,11 +499,13 @@ describe('monitoringCenterPageModel account quota', () => {
           label: 'spark 5-hour limit',
           remainingPercent: 70,
           resetLabel: '07/01 01:00',
+          resetAtMs: Date.parse('2026-07-01T01:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: '1.5h / 5h used',
         },
       ],
     };
-    const observedEntry = {
+    const observedEntry: AccountQuotaEntry = {
       key: 'codex::2::codex.json',
       provider: 'codex' as const,
       providerLabel: 'Codex Quota',
@@ -389,6 +519,8 @@ describe('monitoringCenterPageModel account quota', () => {
           label: 'Monthly limit',
           remainingPercent: 55,
           resetLabel: '07/01 02:00',
+          resetAtMs: Date.parse('2026-07-01T02:00:00Z'),
+          resetAccuracy: 'estimated',
           usageLabel: '13.5d / 30d used',
         },
       ],
@@ -404,16 +536,262 @@ describe('monitoringCenterPageModel account quota', () => {
           id: 'monthly',
           remainingPercent: 55,
           resetLabel: '07/01 02:00',
+          resetAtMs: Date.parse('2026-07-01T02:00:00Z'),
+          resetAccuracy: 'estimated',
           usageLabel: '13.5d / 30d used',
         },
         {
           id: 'spark-five-hour-0',
           remainingPercent: 70,
           resetLabel: '07/01 01:00',
+          resetAtMs: Date.parse('2026-07-01T01:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: '1.5h / 5h used',
         },
       ],
     });
+  });
+
+  it('does not retain an active canonical reset when observed data only has a legacy label', () => {
+    const activeEntry = createMergeAccountQuotaEntry(
+      '06/30 12:00',
+      Date.parse('2026-06-30T12:00:00Z'),
+      'exact'
+    );
+    const observedEntry = createMergeAccountQuotaEntry('2h 18m', null, 'unknown');
+
+    expect(mergeObservedAccountQuotaEntry(activeEntry, observedEntry)).toMatchObject({
+      windows: [
+        {
+          id: 'monthly',
+          resetLabel: '2h 18m',
+          resetAtMs: null,
+          resetAccuracy: 'unknown',
+        },
+      ],
+    });
+  });
+
+  it('preserves active reset metadata when observed data has no reset information', () => {
+    const resetAtMs = Date.parse('2026-06-30T12:00:00Z');
+    const activeEntry = createMergeAccountQuotaEntry('06/30 12:00', resetAtMs, 'exact');
+    const observedEntry = createMergeAccountQuotaEntry('-', null, 'unknown');
+
+    expect(mergeObservedAccountQuotaEntry(activeEntry, observedEntry)).toMatchObject({
+      windows: [
+        {
+          id: 'monthly',
+          resetLabel: '06/30 12:00',
+          resetAtMs,
+          resetAccuracy: 'exact',
+        },
+      ],
+    });
+  });
+
+  it('does not let the ambiguous secondary alias move monthly data onto weekly', () => {
+    const activeEntry = {
+      key: 'codex::2::codex.json',
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'team',
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          remainingPercent: 64,
+          resetLabel: '07/01 02:00',
+          usageLabel: '2.5d / 7d used',
+          providerWindowAliases: ['secondary'],
+        },
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 90,
+          resetLabel: '07/15 02:00',
+          usageLabel: '3d / 30d used',
+          providerWindowAliases: ['secondary'],
+        },
+      ],
+    };
+    const observedEntry = {
+      ...activeEntry,
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/20 02:00',
+          usageLabel: '13.5d / 30d used',
+          providerWindowAliases: ['secondary'],
+        },
+      ],
+    };
+
+    const merged = mergeObservedAccountQuotaEntry(activeEntry, observedEntry);
+
+    expect(merged?.windows).toEqual([
+      expect.objectContaining({ id: 'weekly', remainingPercent: 64 }),
+      expect.objectContaining({ id: 'monthly', remainingPercent: 55 }),
+    ]);
+  });
+
+  it('keeps Spark header quota separate from the active Main weekly quota', () => {
+    const target = createTarget({
+      provider: 'codex',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const activeEntry = {
+      key: target.key,
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: target.authLabel,
+      fileName: target.fileName,
+      planType: 'plus',
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          remainingPercent: 64,
+          resetLabel: '07/01 02:00',
+          usageLabel: '2.5d / 7d used',
+        },
+      ],
+    };
+    const observedEntry = buildObservedCodexAccountQuotaEntry(
+      target,
+      {
+        event_hash: 'spark-header',
+        timestamp_ms: 1_700_000_000_000,
+        requested_model: 'my-spark',
+        resolved_model: 'gpt-5.3-codex-spark',
+        response_metadata: {
+          quota: {
+            plan_type: 'plus',
+            secondary: {
+              used_percent: 0,
+              window_minutes: 10_080,
+              reset_at_ms: 1_700_604_800_000,
+            },
+          },
+        },
+      },
+      t,
+      1_700_000_000_000
+    );
+
+    expect(observedEntry?.windows).toEqual([
+      expect.objectContaining({
+        id: 'spark-weekly-0',
+        remainingPercent: 100,
+        modelScope: {
+          kind: 'models',
+          models: ['gpt-5.3-codex-spark'],
+          complete: true,
+        },
+      }),
+    ]);
+    const merged = mergeObservedAccountQuotaEntry(activeEntry, observedEntry!);
+    expect(merged).not.toBeNull();
+    expect(merged!.windows).toEqual([
+      expect.objectContaining({ id: 'weekly', remainingPercent: 64 }),
+      expect.objectContaining({ id: 'spark-weekly-0', remainingPercent: 100 }),
+    ]);
+  });
+
+  it('does not duplicate a legacy Spark window when merging header evidence', () => {
+    const target = createTarget({ provider: 'codex', authIndex: '2', fileName: 'codex.json' });
+    const sparkScope = {
+      kind: 'models' as const,
+      models: ['gpt-5.3-codex-spark'],
+      complete: true,
+    };
+    const activeEntry = {
+      key: target.key,
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: target.authLabel,
+      fileName: target.fileName,
+      planType: 'plus',
+      windows: [
+        {
+          id: 'fast-coding-weekly-0',
+          label: 'Fast coding',
+          remainingPercent: 50,
+          resetLabel: '-',
+          usageLabel: '3.5d / 7d used',
+          modelScope: sparkScope,
+        },
+      ],
+    };
+    const observedEntry = {
+      ...activeEntry,
+      observedAtMs: 2_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'spark-weekly-0',
+          label: 'Spark weekly',
+          remainingPercent: 100,
+          resetLabel: '-',
+          usageLabel: '0d / 7d used',
+          modelScope: sparkScope,
+          providerWindowAliases: ['fast-coding-weekly-0'],
+        },
+      ],
+    };
+
+    const merged = mergeObservedAccountQuotaEntry(activeEntry, observedEntry);
+    expect(merged?.windows).toHaveLength(1);
+    expect(merged?.windows[0]).toMatchObject({
+      id: 'spark-weekly-0',
+      remainingPercent: 100,
+      providerWindowAliases: expect.arrayContaining(['fast-coding-weekly-0']),
+    });
+  });
+
+  it('keeps a scoped header fallback separate when only provider usage metadata exists', () => {
+    const target = createTarget({
+      provider: 'codex',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const observedEntry = buildObservedCodexAccountQuotaEntry(
+      target,
+      {
+        event_hash: 'spark-provider-usage-only',
+        timestamp_ms: 1_700_000_000_000,
+        requested_model: 'my-spark',
+        resolved_model: 'gpt-5.3-codex-spark',
+        header_quota_used_percent: 0,
+        header_quota_recover_at_ms: 1_700_604_800_000,
+        response_metadata: {
+          provider_usage: {
+            provider: 'codex',
+            state: 'available',
+            actual: 0,
+            limit: 100,
+            recover_at_ms: 1_700_604_800_000,
+          },
+        },
+      },
+      t,
+      1_700_000_000_000
+    );
+
+    expect(observedEntry?.windows).toEqual([
+      expect.objectContaining({
+        id: 'spark-observed',
+        modelScope: {
+          kind: 'models',
+          models: ['gpt-5.3-codex-spark'],
+          complete: true,
+        },
+      }),
+    ]);
   });
 
   it('marks manual quota refresh failures instead of treating cached entries as success', () => {
@@ -813,6 +1191,42 @@ describe('monitoringCenterPageModel account quota', () => {
     expect(merged?.entries[0].failedAtMs).toBeUndefined();
   });
 
+  it('creates a successful account quota state from header evidence alone', () => {
+    const target = createTarget({
+      provider: 'codex',
+      key: 'codex::2::codex.json',
+      authIndex: '2',
+      fileName: 'codex.json',
+    });
+    const observedEntry = {
+      key: target.key,
+      provider: 'codex' as const,
+      providerLabel: 'Codex Quota',
+      authLabel: 'Auth',
+      fileName: 'codex.json',
+      planType: 'plus',
+      metaLabels: ['Codex Quota', 'Observed from latest usage response headers'],
+      observedAtMs: 2_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 55,
+          resetLabel: '07/01 02:00',
+          usageLabel: '13.5d / 30d used',
+        },
+      ],
+    };
+
+    expect(mergeObservedAccountQuotaState(undefined, [target], [observedEntry])).toEqual({
+      status: 'success',
+      targetKey: target.key,
+      entries: [observedEntry],
+      error: '',
+    });
+  });
+
   it('does not merge later header entries when the account quota target set changed', () => {
     const target = createTarget({
       provider: 'codex',
@@ -850,6 +1264,7 @@ describe('monitoringCenterPageModel account quota', () => {
 
   it('maps Antigravity grouped buckets into account quota entries', async () => {
     vi.mocked(fetchAntigravityQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
       serverTimeOffsetMs: null,
       groups: [
         {
@@ -887,9 +1302,16 @@ describe('monitoringCenterPageModel account quota', () => {
     expect(entry.metaLabels).toEqual(['Antigravity Quota']);
     expect(entry.windows).toMatchObject([
       {
-        id: 'agent',
-        label: 'Agent',
+        id: 'agent:daily',
+        label: 'Agent · Daily',
         remainingPercent: 25,
+        resetLabel: '-',
+        usageLabel: null,
+      },
+      {
+        id: 'agent:weekly',
+        label: 'Agent · Weekly',
+        remainingPercent: 50,
         resetLabel: '-',
         usageLabel: null,
       },
@@ -897,15 +1319,20 @@ describe('monitoringCenterPageModel account quota', () => {
   });
 
   it('maps Kimi quota rows without amount labels in account quota entries', async () => {
-    vi.mocked(fetchKimiQuota).mockResolvedValue([
-      {
-        id: 'daily',
-        label: 'Daily',
-        used: 25,
-        limit: 100,
-        resetHint: '2026-07-31T00:00:00Z',
-      },
-    ]);
+    vi.mocked(fetchKimiQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
+      rows: [
+        {
+          id: 'daily',
+          label: 'Daily',
+          used: 25,
+          limit: 100,
+          resetHint: '2026-07-31T00:00:00Z',
+          resetAtMs: Date.parse('2026-07-31T00:00:00Z'),
+          resetAccuracy: 'exact',
+        },
+      ],
+    });
 
     const entry = await requestAccountQuota(
       createTarget({
@@ -924,6 +1351,8 @@ describe('monitoringCenterPageModel account quota', () => {
           id: 'daily',
           label: 'Daily',
           remainingPercent: 75,
+          resetAtMs: Date.parse('2026-07-31T00:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: null,
         },
       ],
@@ -964,12 +1393,16 @@ describe('monitoringCenterPageModel account quota', () => {
           id: 'monthly-limit',
           label: 'Monthly credits',
           remainingPercent: 0,
+          resetAtMs: Date.parse('2026-06-01T00:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: '$0.00 / $100.00 remaining',
         },
         {
           id: 'pay-as-you-go',
           label: 'Pay-as-you-go',
           remainingPercent: 50,
+          resetAtMs: Date.parse('2026-06-01T00:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: '$25.00 / $50.00 remaining',
         },
       ],
@@ -1011,22 +1444,139 @@ describe('monitoringCenterPageModel account quota', () => {
           id: 'weekly-limit',
           label: 'Weekly limit',
           remainingPercent: 60,
+          resetAtMs: Date.parse('2026-07-08T00:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: 'Used 40%',
         },
         {
           id: 'product-0-Grok 4',
           label: 'Grok 4 usage',
           remainingPercent: 75,
+          resetAtMs: Date.parse('2026-07-08T00:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: 'Used 25%',
         },
         {
           id: 'monthly-limit',
           label: 'Monthly credits',
           remainingPercent: 75,
+          resetAtMs: Date.parse('2026-08-01T00:00:00Z'),
+          resetAccuracy: 'exact',
           usageLabel: '$75.00 / $100.00 remaining',
         },
       ],
     });
+  });
+
+  it('does not use the monthly billing period as a product usage reset fallback', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'weekly',
+      usagePercent: null,
+      productUsage: [{ product: 'Grok 4', usagePercent: 25 }],
+      periodStart: undefined,
+      periodEnd: undefined,
+      monthlyLimitCents: 10000,
+      usedCents: 2500,
+      includedUsedCents: 2500,
+      onDemandCapCents: null,
+      onDemandUsedCents: null,
+      onDemandUsedPercent: null,
+      billingPeriodStart: '2026-08-01T00:00:00Z',
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: 25,
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({
+        provider: 'xai',
+        authIndex: '3',
+        fileName: 'xai.json',
+      }),
+      t
+    );
+
+    expect(entry.windows).toContainEqual(
+      expect.objectContaining({
+        id: 'product-0-Grok 4',
+        remainingPercent: 75,
+        resetLabel: '-',
+        resetAtMs: null,
+        resetAccuracy: 'unknown',
+      })
+    );
+  });
+
+  it('does not synthesize monthly credits from an on-demand reset timestamp', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'weekly',
+      usagePercent: 0,
+      periodStart: '2026-08-13T00:00:00Z',
+      periodEnd: '2026-08-20T00:00:00Z',
+      productUsage: [],
+      monthlyLimitCents: null,
+      usedCents: null,
+      includedUsedCents: null,
+      onDemandCapCents: 5_000,
+      onDemandUsedCents: 0,
+      onDemandUsedPercent: 0,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: null,
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
+      t
+    );
+
+    expect(entry.windows?.map((window) => window.id)).toEqual(['weekly-limit', 'pay-as-you-go']);
+  });
+
+  it('does not synthesize monthly credits from weekly protobuf zero placeholders', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'weekly',
+      usagePercent: 0,
+      periodStart: '2026-08-13T00:00:00Z',
+      periodEnd: '2026-08-20T00:00:00Z',
+      productUsage: [],
+      monthlyLimitCents: null,
+      usedCents: 0,
+      includedUsedCents: 0,
+      onDemandCapCents: 0,
+      onDemandUsedCents: 0,
+      onDemandUsedPercent: null,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: null,
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
+      t
+    );
+
+    expect(entry.windows?.map((window) => window.id)).toEqual(['weekly-limit']);
+  });
+
+  it('does not synthesize monthly credits from usage without limit evidence', async () => {
+    vi.mocked(fetchXaiQuota).mockResolvedValue({
+      periodType: 'monthly',
+      usagePercent: null,
+      productUsage: [],
+      monthlyLimitCents: null,
+      usedCents: 500,
+      includedUsedCents: 500,
+      onDemandCapCents: null,
+      onDemandUsedCents: null,
+      onDemandUsedPercent: null,
+      billingPeriodEnd: '2026-09-01T00:00:00Z',
+      usedPercent: null,
+    });
+
+    const entry = await requestAccountQuota(
+      createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
+      t
+    );
+
+    expect(entry.windows).toEqual([]);
   });
 
   it('maps official API health without synthesizing quota windows', async () => {

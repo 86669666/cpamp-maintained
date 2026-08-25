@@ -13,7 +13,9 @@ import type {
   CodexQuotaWindow,
   CodexUsagePayload,
   KimiQuotaRow,
+  KimiUsagePayload,
   XaiBillingConfig,
+  XaiBillingPayload,
   XaiBillingDiagnostic,
   XaiBillingPeriod,
   XaiBillingPeriodType,
@@ -22,7 +24,9 @@ import type {
   XaiProductUsageSummary,
 } from '@/types';
 import { apiCallApi, getApiCallErrorMessage } from '@/services/api/apiCall';
+import { createScopedApiRequestConfig, type ApiClientRequestScope } from '@/services/api/client';
 import { isRecord } from '@/utils/helpers';
+import { sha256Hex } from '@/utils/apiKeyHash';
 import {
   antigravitySubscriptionApi,
   type AntigravitySubscriptionSummary,
@@ -52,7 +56,13 @@ import {
   XAI_REQUEST_HEADERS,
 } from './constants';
 import { buildAntigravityQuotaGroups, buildKimiQuotaRows } from './builders';
-import { createStatusError, formatQuotaResetTime, getStatusFromError } from './formatters';
+import {
+  createStatusError,
+  formatQuotaResetTime,
+  getStatusFromError,
+  resolveAbsoluteQuotaReset,
+  type CodexQuotaResetSource,
+} from './formatters';
 import {
   normalizeAuthIndex,
   normalizeNumberValue,
@@ -65,7 +75,7 @@ import {
   parseXaiBillingPayload,
 } from './parsers';
 import { resolveCodexChatgptAccountId, resolveCodexPlanType } from './resolvers';
-import { buildCodexQuotaWindowInfos } from './codexQuota';
+import { buildCodexQuotaWindowInfos, type CodexQuotaScopeResolution } from './codexQuota';
 import {
   buildCodexResetCreditsRequestHeaders,
   buildCodexUsageRequestHeaders,
@@ -75,26 +85,64 @@ import { classifyXaiProbe, parseXaiErrorEnvelope, XaiProbeError } from './xaiErr
 
 const DEFAULT_ANTIGRAVITY_PROJECT_ID = 'bamboo-precept-lgxtn';
 const CODEX_RESET_CREDITS_REQUEST_TIMEOUT_MS = 8000;
+const XAI_LEGACY_BILLING_REQUEST_TIMEOUT_MS = 3000;
 
 export type CodexQuotaData = {
   planType: string | null;
   windows: CodexQuotaWindow[];
-  subscriptionActiveUntil: string | null;
+  observedAtMs?: number;
+  quotaInventoryObserved: boolean;
+  subscriptionActiveUntil: string | number | null;
+  creditsHasCredits?: boolean | null;
+  creditsUnlimited?: boolean | null;
+  creditsBalance?: string | null;
+  creditsOverageLimitReached?: boolean | null;
+  creditsApproxLocalMessages?: number | null;
+  creditsApproxCloudMessages?: number | null;
+  spendControlReached?: boolean | null;
+  spendControlIndividualLimit?: number | null;
   rateLimitResetCreditsAvailableCount: number | null;
   rateLimitResetCredits: CodexRateLimitResetCredit[];
   rateLimitResetCreditsError: string | null;
 };
 
+const isCodexRateLimitInventory = (value: unknown): boolean =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+export const hasCodexQuotaInventory = (payload: CodexUsagePayload): boolean =>
+  [
+    payload.rate_limit,
+    payload.rateLimit,
+    payload.code_review_rate_limit,
+    payload.codeReviewRateLimit,
+  ].some(isCodexRateLimitInventory) ||
+  [payload.additional_rate_limits, payload.additionalRateLimits].some(Array.isArray);
+
 export type ClaudeQuotaData = {
   windows: ClaudeQuotaWindow[];
+  quotaInventoryObserved: boolean;
   extraUsage?: ClaudeExtraUsage | null;
   planType?: string | null;
 };
 
 export type AntigravityQuotaData = {
   groups: AntigravityQuotaGroup[];
+  quotaInventoryObserved: boolean;
   subscription?: AntigravityQuotaSubscription | null;
   serverTimeOffsetMs: number | null;
+};
+
+export type KimiQuotaData = {
+  rows: KimiQuotaRow[];
+  quotaInventoryObserved: boolean;
+};
+
+const hasOwn = (value: object, key: PropertyKey): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+const hasExplicitEmptyAntigravityInventory = (payload: AntigravityQuotaSummaryPayload): boolean => {
+  if (Array.isArray(payload.groups) && payload.groups.length === 0) return true;
+  return isRecord(payload.models) && Object.keys(payload.models).length === 0;
 };
 
 const antigravitySubscriptionRequests = new Map<
@@ -114,23 +162,30 @@ const toAntigravityQuotaSubscription = (
 };
 
 const fetchAntigravityQuotaSubscription = (
-  authIndex: string
+  authIndex: string,
+  requestScope?: ApiClientRequestScope
 ): Promise<AntigravityQuotaSubscription | null> => {
-  const existing = antigravitySubscriptionRequests.get(authIndex);
+  const requestKey = requestScope
+    ? `${sha256Hex(`${requestScope.apiBase.trim()}\u0000${requestScope.managementKey.trim()}`)}\u0000${authIndex}`
+    : authIndex;
+  const existing = antigravitySubscriptionRequests.get(requestKey);
   if (existing) return existing;
 
   const request = antigravitySubscriptionApi
-    .get(authIndex)
+    .get(authIndex, requestScope)
     .then(toAntigravityQuotaSubscription)
     .catch(() => null)
     .finally(() => {
-      antigravitySubscriptionRequests.delete(authIndex);
+      antigravitySubscriptionRequests.delete(requestKey);
     });
-  antigravitySubscriptionRequests.set(authIndex, request);
+  antigravitySubscriptionRequests.set(requestKey, request);
   return request;
 };
 
-export const resolveAntigravityProjectId = async (file: AuthFileItem): Promise<string> => {
+export const resolveAntigravityProjectId = async (
+  file: AuthFileItem,
+  requestScope?: ApiClientRequestScope
+): Promise<string> => {
   const directProjectId = normalizeStringValue(file.project_id ?? file.projectId);
   if (directProjectId) return directProjectId;
 
@@ -155,7 +210,7 @@ export const resolveAntigravityProjectId = async (file: AuthFileItem): Promise<s
   if (attributesProjectId) return attributesProjectId;
 
   try {
-    const text = await authFilesApi.downloadText(file.name);
+    const text = await authFilesApi.downloadText(file.name, requestScope);
     const trimmed = text.trim();
     if (!trimmed) return DEFAULT_ANTIGRAVITY_PROJECT_ID;
 
@@ -199,7 +254,8 @@ const resolveResponseServerTimeOffsetMs = (
 
 export const fetchAntigravityQuota = async (
   file: AuthFileItem,
-  t: TFunction
+  t: TFunction,
+  requestScope?: ApiClientRequestScope
 ): Promise<AntigravityQuotaData> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
@@ -207,24 +263,29 @@ export const fetchAntigravityQuota = async (
     throw new Error(t('antigravity_quota.missing_auth_index'));
   }
 
-  const projectId = await resolveAntigravityProjectId(file);
+  const projectId = await resolveAntigravityProjectId(file, requestScope);
   const requestBody = JSON.stringify({ project: projectId });
-  const subscriptionPromise = fetchAntigravityQuotaSubscription(authIndex);
+  const subscriptionPromise = fetchAntigravityQuotaSubscription(authIndex, requestScope);
+  const requestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : undefined;
 
   let lastError = '';
   let lastStatus: number | undefined;
   let priorityStatus: number | undefined;
   let hadSuccess = false;
+  let quotaInventoryObserved = false;
 
   for (const url of [...ANTIGRAVITY_QUOTA_SUMMARY_URLS, ...ANTIGRAVITY_AVAILABLE_MODELS_URLS]) {
     try {
-      const result = await apiCallApi.request({
-        authIndex,
-        method: 'POST',
-        url,
-        header: { ...ANTIGRAVITY_REQUEST_HEADERS },
-        data: requestBody,
-      });
+      const result = await apiCallApi.request(
+        {
+          authIndex,
+          method: 'POST',
+          url,
+          header: { ...ANTIGRAVITY_REQUEST_HEADERS },
+          data: requestBody,
+        },
+        requestConfig
+      );
 
       if (result.statusCode < 200 || result.statusCode >= 300) {
         lastError = getApiCallErrorMessage(result);
@@ -246,12 +307,14 @@ export const fetchAntigravityQuota = async (
 
       const groups = buildAntigravityQuotaGroups(payload);
       if (groups.length === 0) {
+        quotaInventoryObserved ||= hasExplicitEmptyAntigravityInventory(payload);
         lastError = t('antigravity_quota.empty_models');
         continue;
       }
 
       return {
         groups,
+        quotaInventoryObserved: true,
         subscription: await subscriptionPromise,
         serverTimeOffsetMs: resolveResponseServerTimeOffsetMs(result.header),
       };
@@ -270,6 +333,7 @@ export const fetchAntigravityQuota = async (
   if (hadSuccess) {
     return {
       groups: [],
+      quotaInventoryObserved,
       subscription: await subscriptionPromise,
       serverTimeOffsetMs: null,
     };
@@ -281,17 +345,28 @@ export const fetchAntigravityQuota = async (
 export const buildCodexQuotaWindows = (
   payload: CodexUsagePayload,
   t: TFunction,
-  planType?: string | null
+  planType?: string | null,
+  observedAtMs = Date.now(),
+  source: CodexQuotaResetSource = 'provider_api',
+  rateLimitScope?: CodexQuotaScopeResolution
 ): CodexQuotaWindow[] =>
-  buildCodexQuotaWindowInfos(payload, { planType }).map((window) => ({
-    id: window.id,
-    label: t(window.labelKey, window.labelParams),
-    labelKey: window.labelKey,
-    labelParams: window.labelParams,
-    usedPercent: window.usedPercent,
-    resetLabel: window.resetLabel,
-    limitWindowSeconds: window.limitWindowSeconds,
-  }));
+  buildCodexQuotaWindowInfos(payload, { planType, observedAtMs, source, rateLimitScope }).map(
+    (window) => ({
+      id: window.id,
+      label: t(window.labelKey, window.labelParams),
+      labelKey: window.labelKey,
+      labelParams: window.labelParams,
+      usedPercent: window.usedPercent,
+      resetLabel: window.resetLabel,
+      resetAtMs: window.resetAtMs,
+      resetAccuracy: window.resetAccuracy,
+      limitWindowSeconds: window.limitWindowSeconds,
+      observationSource: source === 'response_header' ? 'response_header' : 'api_query',
+      observedAtMs,
+      modelScope: window.modelScope,
+      providerWindowAliases: window.providerWindowAliases,
+    })
+  );
 
 const resolveCodexRateLimitResetCreditsAvailableCount = (
   payload: CodexUsagePayload
@@ -300,8 +375,53 @@ const resolveCodexRateLimitResetCreditsAvailableCount = (
   return normalizeNumberValue(credits?.available_count ?? credits?.availableCount);
 };
 
-const resolveCodexSubscriptionActiveUntil = (payload: CodexUsagePayload): string | null =>
-  normalizeStringValue(payload.subscription_active_until ?? payload.subscriptionActiveUntil);
+const resolveCodexSubscriptionActiveUntil = (
+  payload: CodexUsagePayload
+): string | number | null => {
+  const value = payload.subscription_active_until ?? payload.subscriptionActiveUntil;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return normalizeStringValue(value);
+};
+
+const normalizeBooleanValue = (value: unknown): boolean | null => {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) return false;
+  }
+  return null;
+};
+
+const resolveCodexCreditsInfo = (payload: CodexUsagePayload) => {
+  const credits = payload.credits;
+  return {
+    creditsHasCredits: normalizeBooleanValue(credits?.has_credits ?? credits?.hasCredits),
+    creditsUnlimited: normalizeBooleanValue(credits?.unlimited),
+    creditsBalance: normalizeStringValue(credits?.balance),
+    creditsOverageLimitReached: normalizeBooleanValue(
+      credits?.overage_limit_reached ?? credits?.overageLimitReached
+    ),
+    creditsApproxLocalMessages: normalizeNumberValue(
+      credits?.approx_local_messages ?? credits?.approxLocalMessages
+    ),
+    creditsApproxCloudMessages: normalizeNumberValue(
+      credits?.approx_cloud_messages ?? credits?.approxCloudMessages
+    ),
+  };
+};
+
+const resolveCodexSpendControlInfo = (payload: CodexUsagePayload) => {
+  const spendControl = payload.spend_control ?? payload.spendControl;
+  return {
+    spendControlReached: normalizeBooleanValue(spendControl?.reached),
+    spendControlIndividualLimit: normalizeNumberValue(
+      spendControl?.individual_limit ?? spendControl?.individualLimit
+    ),
+  };
+};
 
 type CodexResetCreditsData = {
   availableCount: number | null;
@@ -321,7 +441,8 @@ const resolveCodexResetCreditsAvailableCount = (
 const fetchCodexResetCredits = async (
   authIndex: string,
   accountId: string | null | undefined,
-  t: TFunction
+  t: TFunction,
+  requestConfig?: AxiosRequestConfig
 ): Promise<CodexResetCreditsData> => {
   try {
     const result = await apiCallApi.request(
@@ -331,7 +452,7 @@ const fetchCodexResetCredits = async (
         url: CODEX_RATE_LIMIT_RESET_CREDITS_URL,
         header: buildCodexResetCreditsRequestHeaders(accountId),
       },
-      { timeout: CODEX_RESET_CREDITS_REQUEST_TIMEOUT_MS }
+      { ...requestConfig, timeout: CODEX_RESET_CREDITS_REQUEST_TIMEOUT_MS }
     );
 
     if (result.statusCode < 200 || result.statusCode >= 300) {
@@ -367,7 +488,8 @@ const fetchCodexResetCredits = async (
 
 export const fetchCodexQuota = async (
   file: AuthFileItem,
-  t: TFunction
+  t: TFunction,
+  requestScope?: ApiClientRequestScope
 ): Promise<CodexQuotaData> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
@@ -377,12 +499,16 @@ export const fetchCodexQuota = async (
 
   const planTypeFromFile = resolveCodexPlanType(file);
   const accountId = resolveCodexChatgptAccountId(file);
-  const result = await apiCallApi.request({
-    authIndex,
-    method: 'GET',
-    url: CODEX_USAGE_URL,
-    header: buildCodexUsageRequestHeaders(accountId),
-  });
+  const requestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : undefined;
+  const result = await apiCallApi.request(
+    {
+      authIndex,
+      method: 'GET',
+      url: CODEX_USAGE_URL,
+      header: buildCodexUsageRequestHeaders(accountId),
+    },
+    requestConfig
+  );
 
   if (result.statusCode < 200 || result.statusCode >= 300) {
     throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
@@ -395,13 +521,18 @@ export const fetchCodexQuota = async (
 
   const planTypeFromUsage = normalizePlanType(payload.plan_type ?? payload.planType);
   const planType = planTypeFromUsage ?? planTypeFromFile;
-  const windows = buildCodexQuotaWindows(payload, t, planType);
+  const observedAtMs = Date.now();
+  const windows = buildCodexQuotaWindows(payload, t, planType, observedAtMs);
   const usageResetCreditsAvailableCount = resolveCodexRateLimitResetCreditsAvailableCount(payload);
-  const resetCredits = await fetchCodexResetCredits(authIndex, accountId, t);
+  const resetCredits = await fetchCodexResetCredits(authIndex, accountId, t, requestConfig);
   return {
     planType,
     windows,
+    observedAtMs,
+    quotaInventoryObserved: hasCodexQuotaInventory(payload),
     subscriptionActiveUntil: resolveCodexSubscriptionActiveUntil(payload),
+    ...resolveCodexCreditsInfo(payload),
+    ...resolveCodexSpendControlInfo(payload),
     rateLimitResetCreditsAvailableCount: resolveCodexResetCreditsAvailableCount(
       resetCredits,
       usageResetCreditsAvailableCount
@@ -501,34 +632,43 @@ const resolveClaudeBaseLimitWindowId = (
   return null;
 };
 
-type ClaudeLimitWindowValues = Pick<ClaudeQuotaWindow, 'usedPercent' | 'resetLabel'>;
+type ClaudeLimitWindowValues = Pick<
+  ClaudeQuotaWindow,
+  'usedPercent' | 'resetLabel' | 'resetAtMs' | 'resetAccuracy'
+>;
 
-const resolveClaudeLimitResetAt = (limit: Record<string, unknown>): string => {
+const resolveClaudeLimitResetAt = (limit: Record<string, unknown>): string | number | null => {
   const rawResetAt = limit.resets_at ?? limit.resetsAt ?? limit.reset_at ?? limit.resetAt;
-  return typeof rawResetAt === 'string' ? rawResetAt.trim() : '';
+  if (typeof rawResetAt === 'string') return rawResetAt.trim() || null;
+  return typeof rawResetAt === 'number' && Number.isFinite(rawResetAt) ? rawResetAt : null;
 };
 
 const resolveClaudeLimitResetRank = (limit: Record<string, unknown>): number => {
-  const resetTimestamp = Date.parse(resolveClaudeLimitResetAt(limit));
-  return Number.isFinite(resetTimestamp) ? resetTimestamp : -1;
+  return resolveAbsoluteQuotaReset(resolveClaudeLimitResetAt(limit)).resetAtMs ?? -1;
 };
 
 const parseClaudeLimitWindowValues = (
   limit: Record<string, unknown>
 ): ClaudeLimitWindowValues | null => {
-  const rawPercent = normalizeNumberValue(limit.percent);
+  const rawPercent = normalizeNumberValue(limit.percent ?? limit.utilization);
   const usedPercent = rawPercent !== null && rawPercent >= 0 ? rawPercent : null;
   const resetAt = resolveClaudeLimitResetAt(limit);
-  const resetLabel = formatQuotaResetTime(resetAt || undefined);
+  const reset = resolveAbsoluteQuotaReset(resetAt);
+  const resetLabel = formatQuotaResetTime(resetAt);
   if (usedPercent === null && resetLabel === '-') return null;
-  return { usedPercent, resetLabel };
+  return {
+    usedPercent,
+    resetLabel,
+    resetAtMs: reset.resetAtMs,
+    resetAccuracy: reset.resetAccuracy,
+  };
 };
 
 const findClaudeModelDisplayName = (value: unknown): string | null => {
   if (!isRecord(value)) return null;
 
   const readDisplayName = (candidate: Record<string, unknown>): string | null => {
-    const rawDisplayName = candidate.display_name ?? candidate.displayName;
+    const rawDisplayName = candidate.display_name ?? candidate.displayName ?? candidate.name;
     if (typeof rawDisplayName !== 'string') return null;
     const normalized = rawDisplayName.trim().replace(/\s+/g, ' ');
     return normalized || null;
@@ -658,7 +798,7 @@ const buildClaudeBaseLimitFallbacks = (
       const kind = normalizeClaudeLimitToken(rawLimit.kind);
       const candidate: ClaudeBaseLimitCandidate = {
         completenessRank:
-          (values.usedPercent !== null ? 1 : 0) + (values.resetLabel !== '-' ? 1 : 0),
+          (values.usedPercent !== null ? 1 : 0) + (values.resetAtMs !== null ? 1 : 0),
         kindRank: windowId === 'seven-day' && kind === 'weekly_all' ? 1 : 0,
         resetAtRank: resolveClaudeLimitResetRank(rawLimit),
         usedPercentRank: values.usedPercent ?? -1,
@@ -719,6 +859,12 @@ const buildClaudeScopedWeeklyWindows = (payload: ClaudeUsagePayload): ClaudeQuot
         window: {
           id: `weekly-scoped-${idPart}`,
           label,
+          limitWindowSeconds: 7 * 24 * 60 * 60,
+          modelScope: {
+            kind: 'models',
+            models: modelId ? [modelId] : [],
+            complete: Boolean(modelId),
+          },
           ...values,
         },
       };
@@ -785,6 +931,7 @@ const buildClaudeQuotaWindows = (
     if (window && typeof window === 'object' && 'utilization' in window) {
       const typedWindow = window as { utilization: number; resets_at: string };
       const usedPercent = normalizeNumberValue(typedWindow.utilization);
+      const reset = resolveAbsoluteQuotaReset(typedWindow.resets_at);
       const resetLabel = formatQuotaResetTime(typedWindow.resets_at);
       if (usedPercent !== null || resetLabel !== '-') {
         windows.push({
@@ -793,6 +940,10 @@ const buildClaudeQuotaWindows = (
           labelKey,
           usedPercent,
           resetLabel,
+          resetAtMs: reset.resetAtMs,
+          resetAccuracy: reset.resetAccuracy,
+          limitWindowSeconds: id === 'five-hour' ? 5 * 60 * 60 : 7 * 24 * 60 * 60,
+          modelScope: { kind: 'all', complete: true },
         });
         renderedTopLevelWindow = true;
       }
@@ -805,6 +956,8 @@ const buildClaudeQuotaWindows = (
           label: t(labelKey),
           labelKey,
           ...fallback,
+          limitWindowSeconds: id === 'five-hour' ? 5 * 60 * 60 : 7 * 24 * 60 * 60,
+          modelScope: { kind: 'all', complete: true },
         });
       }
     }
@@ -816,9 +969,22 @@ const buildClaudeQuotaWindows = (
   return windows;
 };
 
+const hasClaudeQuotaInventory = (
+  payload: ClaudeUsagePayload,
+  windows: ClaudeQuotaWindow[]
+): boolean => {
+  if (windows.length > 0) return true;
+  if (Array.isArray(payload.limits) && payload.limits.length === 0) return true;
+
+  return CLAUDE_USAGE_WINDOW_KEYS.some(({ key }) =>
+    hasOwn(payload, key) ? payload[key as keyof ClaudeUsagePayload] === null : false
+  );
+};
+
 export const fetchClaudeQuota = async (
   file: AuthFileItem,
-  t: TFunction
+  t: TFunction,
+  requestScope?: ApiClientRequestScope
 ): Promise<ClaudeQuotaData> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
@@ -826,19 +992,26 @@ export const fetchClaudeQuota = async (
     throw new Error(t('claude_quota.missing_auth_index'));
   }
 
+  const requestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : undefined;
   const [usageResult, profileResult] = await Promise.allSettled([
-    apiCallApi.request({
-      authIndex,
-      method: 'GET',
-      url: CLAUDE_USAGE_URL,
-      header: { ...CLAUDE_REQUEST_HEADERS },
-    }),
-    apiCallApi.request({
-      authIndex,
-      method: 'GET',
-      url: CLAUDE_PROFILE_URL,
-      header: { ...CLAUDE_REQUEST_HEADERS },
-    }),
+    apiCallApi.request(
+      {
+        authIndex,
+        method: 'GET',
+        url: CLAUDE_USAGE_URL,
+        header: { ...CLAUDE_REQUEST_HEADERS },
+      },
+      requestConfig
+    ),
+    apiCallApi.request(
+      {
+        authIndex,
+        method: 'GET',
+        url: CLAUDE_PROFILE_URL,
+        header: { ...CLAUDE_REQUEST_HEADERS },
+      },
+      requestConfig
+    ),
   ]);
 
   if (usageResult.status === 'rejected') {
@@ -866,22 +1039,41 @@ export const fetchClaudeQuota = async (
         )
       : null;
 
-  return { windows, extraUsage: payload.extra_usage, planType };
+  return {
+    windows,
+    quotaInventoryObserved: hasClaudeQuotaInventory(payload, windows),
+    extraUsage: payload.extra_usage,
+    planType,
+  };
 };
 
-export const fetchKimiQuota = async (file: AuthFileItem, t: TFunction): Promise<KimiQuotaRow[]> => {
+const hasKimiQuotaInventory = (payload: KimiUsagePayload, rows: KimiQuotaRow[]): boolean => {
+  if (rows.length > 0) return true;
+  if (Array.isArray(payload.limits) && payload.limits.length === 0) return true;
+  if (Array.isArray(payload.usages) && payload.usages.length === 0) return true;
+  return hasOwn(payload, 'usage') && payload.usage === null;
+};
+
+export const fetchKimiQuota = async (
+  file: AuthFileItem,
+  t: TFunction,
+  requestScope?: ApiClientRequestScope
+): Promise<KimiQuotaData> => {
   const rawAuthIndex = file['auth_index'] ?? file.authIndex;
   const authIndex = normalizeAuthIndex(rawAuthIndex);
   if (!authIndex) {
     throw new Error(t('kimi_quota.missing_auth_index'));
   }
 
-  const result = await apiCallApi.request({
-    authIndex,
-    method: 'GET',
-    url: KIMI_USAGE_URL,
-    header: { ...KIMI_REQUEST_HEADERS },
-  });
+  const result = await apiCallApi.request(
+    {
+      authIndex,
+      method: 'GET',
+      url: KIMI_USAGE_URL,
+      header: { ...KIMI_REQUEST_HEADERS },
+    },
+    requestScope ? createScopedApiRequestConfig(requestScope) : undefined
+  );
 
   if (result.statusCode < 200 || result.statusCode >= 300) {
     throw createStatusError(getApiCallErrorMessage(result), result.statusCode);
@@ -892,15 +1084,46 @@ export const fetchKimiQuota = async (file: AuthFileItem, t: TFunction): Promise<
     throw new Error(t('kimi_quota.empty_data'));
   }
 
-  return buildKimiQuotaRows(payload);
+  const rows = buildKimiQuotaRows(payload, { observedAtMs: Date.now() });
+  return {
+    rows,
+    quotaInventoryObserved: hasKimiQuotaInventory(payload, rows),
+  };
 };
 
 const normalizeXaiCentValue = (value: unknown): number | null => {
   if (value === undefined || value === null) return null;
   if (typeof value === 'object' && !Array.isArray(value)) {
-    return normalizeNumberValue((value as { val?: unknown }).val);
+    const record = value as { val?: unknown; value?: unknown };
+    if (Object.keys(record).length === 0) return null;
+    return normalizeNumberValue(record.val) ?? normalizeNumberValue(record.value);
   }
   return normalizeNumberValue(value);
+};
+
+const resolveXaiCentCandidate = (...values: unknown[]) => {
+  for (const value of values) {
+    const normalized = normalizeXaiCentValue(value);
+    if (normalized !== null) {
+      return { value: normalized, hasEvidence: true };
+    }
+  }
+  return { value: null, hasEvidence: false };
+};
+
+const normalizeXaiPeriodTimestamp = (value: unknown): string | undefined =>
+  normalizeStringValue(value) ?? undefined;
+
+const hasValidXaiPeriodWindow = (start?: string, end?: string): boolean => {
+  if (!start || !end) return false;
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
+};
+
+const resolveXaiBillingConfig = (payload: XaiBillingPayload | null): XaiBillingConfig | null => {
+  if (!payload || typeof payload !== 'object') return null;
+  return payload.config ?? (payload as XaiBillingConfig);
 };
 
 const resolveXaiPeriodType = (period?: XaiBillingPeriod | null): XaiBillingPeriodType => {
@@ -939,6 +1162,25 @@ const emptyXaiBillingSummary = (): XaiBillingSummary => ({
   usedPercent: null,
 });
 
+type XaiBillingFieldEvidence = {
+  monthlyLimit: boolean;
+  used: boolean;
+  includedUsed: boolean;
+  onDemandCap: boolean;
+  onDemandUsed: boolean;
+};
+
+const xaiBillingFieldEvidence = new WeakMap<XaiBillingSummary, XaiBillingFieldEvidence>();
+
+const getXaiBillingFieldEvidence = (summary: XaiBillingSummary): XaiBillingFieldEvidence =>
+  xaiBillingFieldEvidence.get(summary) ?? {
+    monthlyLimit: summary.monthlyLimitCents !== null,
+    used: summary.usedCents !== null,
+    includedUsed: summary.includedUsedCents !== null,
+    onDemandCap: summary.onDemandCapCents !== null,
+    onDemandUsed: summary.onDemandUsedCents !== null,
+  };
+
 export const buildXaiBillingSummary = (
   config: XaiBillingConfig | null | undefined
 ): XaiBillingSummary | null => {
@@ -947,39 +1189,72 @@ export const buildXaiBillingSummary = (
   const summary = emptyXaiBillingSummary();
   const currentPeriod = config.currentPeriod ?? config.current_period ?? null;
   const periodType = resolveXaiPeriodType(currentPeriod);
-  const creditUsagePercent = normalizeNumberValue(
+  const rawCreditUsagePercent = normalizeNumberValue(
     config.creditUsagePercent ?? config.credit_usage_percent
   );
-  const periodStart =
-    normalizeStringValue(currentPeriod?.start) ??
-    normalizeStringValue(config.billingPeriodStart ?? config.billing_period_start) ??
-    undefined;
-  const periodEnd =
-    normalizeStringValue(currentPeriod?.end) ??
-    normalizeStringValue(config.billingPeriodEnd ?? config.billing_period_end) ??
-    undefined;
+  const periodStart = normalizeXaiPeriodTimestamp(currentPeriod?.start);
+  const periodEnd = normalizeXaiPeriodTimestamp(currentPeriod?.end);
+  const creditUsagePercent =
+    rawCreditUsagePercent ??
+    (periodType === 'weekly' && hasValidXaiPeriodWindow(periodStart, periodEnd) ? 0 : null);
+  const billingCycle = config.billingCycle ?? config.billing_cycle ?? null;
+  const nestedUsage = config.usage ?? null;
   const productUsage = normalizeXaiProductUsage(
     config.productUsage ?? config.product_usage,
     'Product'
   );
-
-  const monthlyLimitCents = normalizeXaiCentValue(config.monthlyLimit ?? config.monthly_limit);
-  const usedCents = normalizeXaiCentValue(config.used);
-  const onDemandCapCents = normalizeXaiCentValue(config.onDemandCap ?? config.on_demand_cap);
-  const explicitOnDemandUsedCents = normalizeXaiCentValue(
-    config.onDemandUsed ?? config.on_demand_used
+  const monthlyLimit = resolveXaiCentCandidate(config.monthlyLimit, config.monthly_limit);
+  const nestedIncludedUsed = resolveXaiCentCandidate(
+    nestedUsage?.includedUsed,
+    nestedUsage?.included_used
   );
+  const explicitOnDemandUsed = resolveXaiCentCandidate(
+    config.onDemandUsed,
+    config.on_demand_used,
+    nestedUsage?.onDemandUsed,
+    nestedUsage?.on_demand_used
+  );
+  const rawUsed = resolveXaiCentCandidate(
+    config.used,
+    nestedUsage?.totalUsed,
+    nestedUsage?.total_used
+  );
+  const onDemandCap = resolveXaiCentCandidate(config.onDemandCap, config.on_demand_cap);
+  const monthlyLimitCents = monthlyLimit.value;
+  const nestedIncludedUsedCents = nestedIncludedUsed.value;
+  const explicitOnDemandUsedCents = explicitOnDemandUsed.value;
+  const rawUsedCents = rawUsed.value;
+  const usedCents =
+    rawUsedCents ??
+    (nestedIncludedUsedCents !== null || explicitOnDemandUsedCents !== null
+      ? (nestedIncludedUsedCents ?? 0) + (explicitOnDemandUsedCents ?? 0)
+      : null);
+  const onDemandCapCents = onDemandCap.value;
   const billingPeriodStart =
-    normalizeStringValue(config.billingPeriodStart ?? config.billing_period_start) ?? undefined;
+    normalizeStringValue(
+      config.billingPeriodStart ??
+        config.billing_period_start ??
+        billingCycle?.billingPeriodStart ??
+        billingCycle?.billing_period_start
+    ) ?? undefined;
   const billingPeriodEnd =
-    normalizeStringValue(config.billingPeriodEnd ?? config.billing_period_end) ?? undefined;
+    normalizeStringValue(
+      config.billingPeriodEnd ??
+        config.billing_period_end ??
+        billingCycle?.billingPeriodEnd ??
+        billingCycle?.billing_period_end
+    ) ?? undefined;
 
-  const includedUsedCents =
-    usedCents === null
-      ? null
-      : monthlyLimitCents !== null && monthlyLimitCents > 0
-        ? Math.min(usedCents, monthlyLimitCents)
-        : usedCents;
+  const hasMonthlyData =
+    monthlyLimit.hasEvidence || rawUsed.hasEvidence || nestedIncludedUsed.hasEvidence;
+  const includedUsedCents = hasMonthlyData
+    ? (nestedIncludedUsedCents ??
+      (usedCents === null
+        ? null
+        : monthlyLimitCents !== null && monthlyLimitCents > 0
+          ? Math.min(usedCents, monthlyLimitCents)
+          : usedCents))
+    : null;
   const derivedOnDemandUsedCents =
     usedCents !== null && monthlyLimitCents !== null
       ? Math.max(0, usedCents - monthlyLimitCents)
@@ -996,33 +1271,41 @@ export const buildXaiBillingSummary = (
 
   const hasWeeklyData =
     creditUsagePercent !== null || periodType === 'weekly' || productUsage.length > 0;
-  const hasMonthlyData =
-    monthlyLimitCents !== null ||
-    usedCents !== null ||
-    (!hasWeeklyData && (onDemandCapCents !== null || !!billingPeriodEnd));
-  const hasBillingPeriodData =
-    hasMonthlyData || onDemandCapCents !== null || onDemandUsedCents !== null;
+  const hasOnDemandData =
+    onDemandCap.hasEvidence ||
+    explicitOnDemandUsed.hasEvidence ||
+    (derivedOnDemandUsedCents !== null && derivedOnDemandUsedCents > 0);
+  const hasBillingPeriodData = hasMonthlyData || hasOnDemandData;
 
-  if (!hasWeeklyData && !hasMonthlyData) return null;
+  if (!hasWeeklyData && !hasMonthlyData && !hasOnDemandData) return null;
 
   summary.periodType = hasWeeklyData
     ? periodType === 'unknown'
       ? 'weekly'
       : periodType
-    : 'monthly';
+    : hasMonthlyData
+      ? 'monthly'
+      : 'unknown';
   summary.usagePercent = hasWeeklyData ? creditUsagePercent : usedPercent;
   summary.periodStart = hasWeeklyData ? periodStart : billingPeriodStart;
   summary.periodEnd = hasWeeklyData ? periodEnd : billingPeriodEnd;
   summary.productUsage = productUsage;
-  summary.monthlyLimitCents = monthlyLimitCents;
-  summary.usedCents = usedCents;
+  summary.monthlyLimitCents = hasMonthlyData ? monthlyLimitCents : null;
+  summary.usedCents = hasBillingPeriodData ? usedCents : null;
   summary.includedUsedCents = includedUsedCents;
-  summary.onDemandCapCents = onDemandCapCents;
-  summary.onDemandUsedCents = onDemandUsedCents;
-  summary.onDemandUsedPercent = onDemandUsedPercent;
+  summary.onDemandCapCents = hasOnDemandData ? onDemandCapCents : null;
+  summary.onDemandUsedCents = hasOnDemandData ? onDemandUsedCents : null;
+  summary.onDemandUsedPercent = hasOnDemandData ? onDemandUsedPercent : null;
   summary.billingPeriodStart = hasBillingPeriodData ? billingPeriodStart : undefined;
   summary.billingPeriodEnd = hasBillingPeriodData ? billingPeriodEnd : undefined;
   summary.usedPercent = usedPercent;
+  xaiBillingFieldEvidence.set(summary, {
+    monthlyLimit: monthlyLimit.hasEvidence,
+    used: rawUsed.hasEvidence,
+    includedUsed: nestedIncludedUsed.hasEvidence,
+    onDemandCap: onDemandCap.hasEvidence,
+    onDemandUsed: explicitOnDemandUsed.hasEvidence,
+  });
 
   return summary;
 };
@@ -1034,22 +1317,93 @@ export const mergeXaiBillingSummaries = (
   if (!primary) return fallback;
   if (!fallback) return primary;
 
-  return {
-    periodType: primary.periodType !== 'unknown' ? primary.periodType : fallback.periodType,
-    usagePercent: primary.usagePercent ?? fallback.usagePercent,
-    periodStart: primary.periodStart ?? fallback.periodStart,
-    periodEnd: primary.periodEnd ?? fallback.periodEnd,
-    productUsage: primary.productUsage.length > 0 ? primary.productUsage : fallback.productUsage,
-    monthlyLimitCents: primary.monthlyLimitCents ?? fallback.monthlyLimitCents,
-    usedCents: primary.usedCents ?? fallback.usedCents,
-    includedUsedCents: primary.includedUsedCents ?? fallback.includedUsedCents,
-    onDemandCapCents: primary.onDemandCapCents ?? fallback.onDemandCapCents,
-    onDemandUsedCents: primary.onDemandUsedCents ?? fallback.onDemandUsedCents,
-    onDemandUsedPercent: primary.onDemandUsedPercent ?? fallback.onDemandUsedPercent,
+  const primaryHasWeeklyData =
+    primary.periodType === 'weekly' ||
+    primary.usagePercent !== null ||
+    primary.productUsage.length > 0;
+  const weeklySource = primaryHasWeeklyData ? primary : fallback;
+  const primaryEvidence = getXaiBillingFieldEvidence(primary);
+  const fallbackEvidence = getXaiBillingFieldEvidence(fallback);
+  const primaryMonthlyLimit = primaryEvidence.monthlyLimit ? primary.monthlyLimitCents : null;
+  const fallbackMonthlyLimit = fallbackEvidence.monthlyLimit ? fallback.monthlyLimitCents : null;
+  const monthlyLimitCents = primaryMonthlyLimit ?? fallbackMonthlyLimit;
+  const primaryRawUsed = primaryEvidence.used ? primary.usedCents : null;
+  const fallbackRawUsed = fallbackEvidence.used ? fallback.usedCents : null;
+  let includedUsedHasEvidence = primaryEvidence.includedUsed;
+  let includedUsedCents = includedUsedHasEvidence ? primary.includedUsedCents : null;
+  if (includedUsedCents === null && primaryRawUsed !== null) {
+    includedUsedCents = primaryRawUsed;
+  }
+  if (includedUsedCents === null && fallbackEvidence.includedUsed) {
+    includedUsedCents = fallback.includedUsedCents;
+    includedUsedHasEvidence = includedUsedCents !== null;
+  }
+  if (includedUsedCents === null && fallbackRawUsed !== null) {
+    includedUsedCents = fallbackRawUsed;
+  }
+  if (includedUsedCents !== null && monthlyLimitCents !== null && monthlyLimitCents > 0) {
+    includedUsedCents = Math.min(includedUsedCents, monthlyLimitCents);
+  }
+
+  const primaryOnDemandCap = primaryEvidence.onDemandCap ? primary.onDemandCapCents : null;
+  const fallbackOnDemandCap = fallbackEvidence.onDemandCap ? fallback.onDemandCapCents : null;
+  const onDemandCapCents = primaryOnDemandCap ?? fallbackOnDemandCap;
+  let onDemandUsedHasEvidence = primaryEvidence.onDemandUsed;
+  let onDemandUsedCents = onDemandUsedHasEvidence ? primary.onDemandUsedCents : null;
+  if (onDemandUsedCents === null && primaryRawUsed !== null && monthlyLimitCents !== null) {
+    onDemandUsedCents = Math.max(0, primaryRawUsed - monthlyLimitCents);
+  }
+  if (onDemandUsedCents === null && fallbackEvidence.onDemandUsed) {
+    onDemandUsedCents = fallback.onDemandUsedCents;
+    onDemandUsedHasEvidence = onDemandUsedCents !== null;
+  }
+  if (onDemandUsedCents === null && fallbackRawUsed !== null && monthlyLimitCents !== null) {
+    onDemandUsedCents = Math.max(0, fallbackRawUsed - monthlyLimitCents);
+  }
+  const hasPrimaryComponentEvidence = primaryEvidence.includedUsed || primaryEvidence.onDemandUsed;
+  const usedCents =
+    primaryRawUsed ??
+    (hasPrimaryComponentEvidence
+      ? includedUsedCents !== null && onDemandUsedCents !== null
+        ? includedUsedCents + onDemandUsedCents
+        : (includedUsedCents ?? onDemandUsedCents)
+      : (fallbackRawUsed ??
+        (includedUsedCents !== null && onDemandUsedCents !== null
+          ? includedUsedCents + onDemandUsedCents
+          : (includedUsedCents ?? onDemandUsedCents))));
+  const usedPercent =
+    monthlyLimitCents !== null && monthlyLimitCents > 0 && includedUsedCents !== null
+      ? (includedUsedCents / monthlyLimitCents) * 100
+      : (primary.usedPercent ?? fallback.usedPercent);
+  const onDemandUsedPercent =
+    onDemandCapCents !== null && onDemandCapCents > 0 && onDemandUsedCents !== null
+      ? (onDemandUsedCents / onDemandCapCents) * 100
+      : (primary.onDemandUsedPercent ?? fallback.onDemandUsedPercent);
+
+  const merged: XaiBillingSummary = {
+    periodType: weeklySource.periodType,
+    usagePercent: weeklySource.usagePercent,
+    periodStart: weeklySource.periodStart,
+    periodEnd: weeklySource.periodEnd,
+    productUsage: weeklySource.productUsage,
+    monthlyLimitCents,
+    usedCents,
+    includedUsedCents,
+    onDemandCapCents,
+    onDemandUsedCents,
+    onDemandUsedPercent,
     billingPeriodStart: primary.billingPeriodStart ?? fallback.billingPeriodStart,
     billingPeriodEnd: primary.billingPeriodEnd ?? fallback.billingPeriodEnd,
-    usedPercent: primary.usedPercent ?? fallback.usedPercent,
+    usedPercent,
   };
+  xaiBillingFieldEvidence.set(merged, {
+    monthlyLimit: primaryEvidence.monthlyLimit || fallbackEvidence.monthlyLimit,
+    used: primaryEvidence.used || (!hasPrimaryComponentEvidence && fallbackEvidence.used),
+    includedUsed: includedUsedHasEvidence,
+    onDemandCap: primaryEvidence.onDemandCap || fallbackEvidence.onDemandCap,
+    onDemandUsed: onDemandUsedHasEvidence,
+  });
+  return merged;
 };
 
 const toXaiRecord = (value: unknown): Record<string, unknown> | null =>
@@ -1211,7 +1565,7 @@ const requestXaiBilling = async (
   }
 
   const payload = parseXaiBillingPayload(result.body ?? result.bodyText);
-  const summary = buildXaiBillingSummary(payload?.config);
+  const summary = buildXaiBillingSummary(resolveXaiBillingConfig(payload));
   if (!summary) {
     const envelope = parseXaiErrorEnvelope({
       statusCode: result.hasStatusCode ? result.statusCode : null,
@@ -1472,17 +1826,26 @@ const requestXaiBillingProbe = async (
 ) => {
   const authIndex = resolveXaiProbeAuthIndex(file, t);
   const requestHeader = buildXaiRequestHeaders(file);
+  const configuredTimeout = requestConfig?.timeout;
+  const legacyRequestConfig: AxiosRequestConfig = {
+    ...requestConfig,
+    timeout:
+      typeof configuredTimeout === 'number' && configuredTimeout > 0
+        ? Math.min(configuredTimeout, XAI_LEGACY_BILLING_REQUEST_TIMEOUT_MS)
+        : XAI_LEGACY_BILLING_REQUEST_TIMEOUT_MS,
+  };
   const [weeklyResult, monthlyResult] = await Promise.allSettled([
     requestXaiBilling(authIndex, XAI_BILLING_WEEKLY_URL, requestHeader, requestConfig),
-    requestXaiBilling(authIndex, XAI_BILLING_MONTHLY_URL, requestHeader, requestConfig),
+    requestXaiBilling(authIndex, XAI_BILLING_MONTHLY_URL, requestHeader, legacyRequestConfig),
   ]);
   const weeklyProbe = weeklyResult.status === 'fulfilled' ? weeklyResult.value : null;
   const monthlyProbe = monthlyResult.status === 'fulfilled' ? monthlyResult.value : null;
   const weeklySummary = weeklyProbe?.summary ?? null;
   const monthlySummary = monthlyProbe?.summary ?? null;
-  const failures = [weeklyResult, monthlyResult].flatMap((result) =>
-    result.status === 'rejected' ? [result.reason] : []
-  );
+  const weeklyFailures = weeklyResult.status === 'rejected' ? [weeklyResult.reason] : [];
+  const monthlyFailures = monthlyResult.status === 'rejected' ? [monthlyResult.reason] : [];
+  const weeklyFailure = weeklyFailures[0];
+  const failures = weeklySummary ? [] : weeklyFailure ? [weeklyFailure] : monthlyFailures;
 
   return {
     authIndex,
@@ -1499,8 +1862,11 @@ export const probeXaiBilling = async (
   t: TFunction,
   requestConfig?: AxiosRequestConfig
 ): Promise<XaiBillingProbeResult> => {
-  const { failures, monthlySummary, statusCode, summary, weeklySummary } =
-    await requestXaiBillingProbe(file, t, requestConfig);
+  const { failures, statusCode, summary, weeklySummary } = await requestXaiBillingProbe(
+    file,
+    t,
+    requestConfig
+  );
   if (!summary) {
     if (failures.length > 0) throw selectXaiBillingFailure(failures);
     throw new Error(t('xai_quota.empty_data'));
@@ -1509,7 +1875,7 @@ export const probeXaiBilling = async (
   return {
     summary,
     failures,
-    partial: failures.length > 0 || weeklySummary === null || monthlySummary === null,
+    partial: weeklySummary === null,
     statusCode,
   };
 };
@@ -1519,22 +1885,27 @@ export const probeXaiQuota = async (
   t: TFunction,
   requestConfig?: AxiosRequestConfig
 ): Promise<XaiQuotaProbeResult> => {
-  const { authIndex, failures, monthlySummary, statusCode, summary, weeklySummary } =
-    await requestXaiBillingProbe(file, t, requestConfig);
+  const { authIndex, failures, statusCode, summary, weeklySummary } = await requestXaiBillingProbe(
+    file,
+    t,
+    requestConfig
+  );
   if (summary) {
     return {
       summary,
       failures,
-      partial: failures.length > 0 || weeklySummary === null || monthlySummary === null,
+      partial: weeklySummary === null,
       source: 'billing',
       statusCode,
-      blockingFailure: selectXaiBlockingBillingFailure(failures),
+      blockingFailure:
+        weeklySummary === null ? selectXaiBlockingBillingFailure(failures) : undefined,
     };
   }
   if (failures.length === 0) {
     throw new Error(t('xai_quota.empty_data'));
   }
-  if (!failures.every(isXaiOfficialApiFallbackFailure)) {
+  const canFallbackToOfficialApi = failures.every(isXaiOfficialApiFallbackFailure);
+  if (!canFallbackToOfficialApi) {
     throw selectXaiBillingFailure(failures);
   }
 
@@ -1552,8 +1923,16 @@ export const probeXaiQuota = async (
   }
 };
 
-export const fetchXaiQuota = async (file: AuthFileItem, t: TFunction): Promise<XaiBillingSummary> =>
-  probeXaiQuota(file, t).then(({ summary, partial, failures }) => ({
+export const fetchXaiQuota = async (
+  file: AuthFileItem,
+  t: TFunction,
+  requestScope?: ApiClientRequestScope
+): Promise<XaiBillingSummary> =>
+  probeXaiQuota(
+    file,
+    t,
+    requestScope ? createScopedApiRequestConfig(requestScope) : undefined
+  ).then(({ summary, partial, failures }) => ({
     ...summary,
     partial,
     diagnostics: failures.map((failure): XaiBillingDiagnostic => {

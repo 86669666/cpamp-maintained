@@ -1,12 +1,15 @@
-import React from 'react';
 import type { TFunction } from 'i18next';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it } from 'vitest';
-import type { ClaudeQuotaState, CodexQuotaState, XaiQuotaState } from '@/types';
-import type { QuotaRenderHelpers } from './QuotaCard';
+import type { CodexQuotaState } from '@/types';
+import { CODEX_SPARK_MODEL_ID } from '@/utils/quota/codexQuota';
 import {
+  ANTIGRAVITY_CONFIG,
+  buildObservedCodexQuotaState,
+  buildQuotaFailureState,
   CLAUDE_CONFIG,
+  CODEX_CONFIG,
   getCodexQuotaStoreKey,
+  KIMI_CONFIG,
   getSortedCodexResetCreditExpiries,
   resolveQuotaDisplayState,
   XAI_CONFIG,
@@ -37,6 +40,25 @@ describe('getCodexQuotaStoreKey', () => {
 
     expect(first).not.toBe(second);
   });
+
+  it('uses the same credential identity contract for every quota provider', () => {
+    const file = {
+      name: 'shared.json',
+      provider: 'claude',
+      authIndex: 'auth-1',
+    };
+    const configs = [CLAUDE_CONFIG, ANTIGRAVITY_CONFIG, CODEX_CONFIG, KIMI_CONFIG, XAI_CONFIG];
+
+    configs.forEach((config) => {
+      expect(config.getStoreKey?.(file)).toBe('shared.json::auth-1');
+      expect(config.buildLoadingState(file)).toMatchObject({
+        authFileKey: 'shared.json::auth-1',
+        authFileName: 'shared.json',
+        authIndex: 'auth-1',
+        authFileIdentityVerified: true,
+      });
+    });
+  });
 });
 
 type TestQuotaState = {
@@ -47,6 +69,54 @@ type TestQuotaState = {
   observedFromUsageHeaders?: boolean;
   windows?: unknown[];
 };
+
+type FailureTestState = {
+  status: 'success' | 'error';
+  fetchedAtMs?: number;
+  windows?: Array<{ id: string; usedPercent: number }>;
+  error?: string;
+  lastError?: string;
+  errorStatus?: number;
+  failedAtMs?: number;
+};
+
+describe('buildQuotaFailureState', () => {
+  it('lets providers preserve the last successful quota while recording refresh failure', () => {
+    const activeState: FailureTestState = {
+      status: 'success' as const,
+      fetchedAtMs: 1_000,
+      windows: [{ id: 'weekly', usedPercent: 25 }],
+    };
+    const result = buildQuotaFailureState<FailureTestState, unknown>(
+      {
+        buildErrorState: (message: string, status?: number) => ({
+          status: 'error' as const,
+          error: message,
+          errorStatus: status,
+        }),
+        buildFailureState: (message, status, _file, previous, failedAtMs) => ({
+          ...previous,
+          status: 'success' as const,
+          lastError: message,
+          errorStatus: status,
+          failedAtMs,
+        }),
+      },
+      'temporary failure',
+      503,
+      { name: 'codex.json', type: 'codex' },
+      activeState,
+      2_000
+    );
+
+    expect(result).toEqual({
+      ...activeState,
+      lastError: 'temporary failure',
+      errorStatus: 503,
+      failedAtMs: 2_000,
+    });
+  });
+});
 
 describe('getSortedCodexResetCreditExpiries', () => {
   it('filters expired or invalid reset credits and sorts by expiry time', () => {
@@ -88,169 +158,41 @@ describe('getSortedCodexResetCreditExpiries', () => {
   });
 });
 
-describe('CLAUDE_CONFIG.renderQuotaItems', () => {
-  it('renders scoped model quota windows with their dynamic labels', () => {
-    const quota: ClaudeQuotaState = {
+describe('resolveQuotaDisplayState', () => {
+  it('uses observed headers when a Codex success response did not identify a quota inventory', () => {
+    const activeQuota: CodexQuotaState = {
       status: 'success',
+      fetchedAtMs: 2_000,
+      quotaInventoryObserved: false,
+      planType: 'plus',
+      windows: [],
+    };
+    const observedQuota: CodexQuotaState = {
+      status: 'success',
+      observedAtMs: 1_000,
+      observedFromUsageHeaders: true,
       windows: [
         {
-          id: 'weekly-scoped-fable%205%20max',
-          label: 'Fable 5 Max',
-          usedPercent: 100,
-          resetLabel: '07/08 21:00',
+          id: 'five-hour',
+          label: '5-hour limit',
+          usedPercent: 25,
+          resetLabel: '07/01 12:00',
         },
       ],
     };
-    const helpers: QuotaRenderHelpers = {
-      styles: new Proxy(
-        {},
-        {
-          get: (_target, property) => String(property),
-        }
-      ) as QuotaRenderHelpers['styles'],
-      QuotaProgressBar: ({ percent }) =>
-        React.createElement('div', { className: 'progress', 'data-percent': percent }),
-    };
-    let renderer!: ReactTestRenderer;
 
-    act(() => {
-      renderer = create(
-        React.createElement(
-          React.Fragment,
-          null,
-          CLAUDE_CONFIG.renderQuotaItems(quota, ((key: string) => key) as TFunction, helpers)
-        )
-      );
-    });
+    const result = resolveQuotaDisplayState(activeQuota, observedQuota) as CodexQuotaState;
 
-    const output = JSON.stringify(renderer.toJSON());
-    expect(output).toContain('Fable 5 Max');
-    expect(output).toContain('0%');
-    expect(output).toContain('07/08 21:00');
-    expect(output).toContain('"data-percent":0');
-  });
-});
-
-describe('XAI_CONFIG.renderQuotaItems', () => {
-  it('renders partial billing diagnostics as a user-facing explanation', () => {
-    const quota: XaiQuotaState = {
+    expect(result).toMatchObject({
       status: 'success',
-      billing: {
-        periodType: 'monthly',
-        usagePercent: null,
-        productUsage: [],
-        monthlyLimitCents: 10_000,
-        usedCents: 2_500,
-        includedUsedCents: 2_500,
-        onDemandCapCents: null,
-        onDemandUsedCents: null,
-        onDemandUsedPercent: null,
-        usedPercent: 25,
-        partial: true,
-        diagnostics: [
-          {
-            classification: 'protocol_changed',
-            statusCode: 200,
-            message: 'xAI billing response schema changed',
-          },
-        ],
-      },
-    };
-    const helpers: QuotaRenderHelpers = {
-      styles: new Proxy(
-        {},
-        {
-          get: (_target, property) => String(property),
-        }
-      ) as QuotaRenderHelpers['styles'],
-      QuotaProgressBar: ({ percent }) =>
-        React.createElement('div', { className: 'progress', 'data-percent': percent }),
-    };
-    const t = ((key: string, options?: Record<string, unknown>) => {
-      const messages: Record<string, string> = {
-        'xai_quota.partial_data': 'Some billing data is unavailable. Reason: {{details}}',
-        'xai_quota.diagnostic_protocol_changed':
-          'The billing endpoint returned data that cannot currently be recognized',
-      };
-      let message = messages[key] ?? key;
-      Object.entries(options ?? {}).forEach(([name, value]) => {
-        message = message.replace(`{{${name}}}`, String(value));
-      });
-      return message;
-    }) as TFunction;
-    let renderer!: ReactTestRenderer;
-
-    act(() => {
-      renderer = create(
-        React.createElement(React.Fragment, null, XAI_CONFIG.renderQuotaItems(quota, t, helpers))
-      );
+      fetchedAtMs: 2_000,
+      observedAtMs: 1_000,
+      observedFromUsageHeaders: true,
+      planType: 'plus',
+      windows: [{ id: 'five-hour', usedPercent: 25 }],
     });
-
-    const output = JSON.stringify(renderer.toJSON());
-    expect(output).toContain(
-      'The billing endpoint returned data that cannot currently be recognized'
-    );
-    expect(output).not.toContain('protocol_changed');
-    expect(output).not.toContain('HTTP 200');
   });
 
-  it('renders official API health without fake billing or pay-as-you-go rows', () => {
-    const quota: XaiQuotaState = {
-      status: 'success',
-      billing: {
-        periodType: 'unknown',
-        usagePercent: null,
-        productUsage: [],
-        monthlyLimitCents: null,
-        usedCents: null,
-        includedUsedCents: null,
-        onDemandCapCents: null,
-        onDemandUsedCents: null,
-        onDemandUsedPercent: null,
-        usedPercent: null,
-        officialApiHealth: {
-          source: 'api.x.ai/v1/me',
-          userId: 'user-1',
-          teamId: 'team-1',
-          teamBlocked: false,
-        },
-      },
-    };
-    const helpers: QuotaRenderHelpers = {
-      styles: new Proxy(
-        {},
-        {
-          get: (_target, property) => String(property),
-        }
-      ) as QuotaRenderHelpers['styles'],
-      QuotaProgressBar: ({ percent }) =>
-        React.createElement('div', { className: 'progress', 'data-percent': percent }),
-    };
-    const t = ((key: string) =>
-      ({
-        'xai_quota.plan_label': 'Plan',
-        'xai_quota.official_api_plan': 'Official API',
-        'xai_quota.official_api_health':
-          'Official xAI API identity is reachable. Billing and remaining quota are unavailable for this OAuth credential.',
-      })[key] ?? key) as TFunction;
-    let renderer!: ReactTestRenderer;
-
-    act(() => {
-      renderer = create(
-        React.createElement(React.Fragment, null, XAI_CONFIG.renderQuotaItems(quota, t, helpers))
-      );
-    });
-
-    const output = JSON.stringify(renderer.toJSON());
-    expect(output).toContain('Official API');
-    expect(output).toContain('Official xAI API identity is reachable');
-    expect(output).not.toContain('Pay-as-you-go');
-    expect(output).not.toContain('Monthly credits');
-    expect(output).not.toContain('data-percent');
-  });
-});
-
-describe('resolveQuotaDisplayState', () => {
   it('keeps a newer manual quota refresh over an older header snapshot', () => {
     const activeQuota: TestQuotaState = {
       status: 'success',
@@ -265,6 +207,163 @@ describe('resolveQuotaDisplayState', () => {
     };
 
     expect(resolveQuotaDisplayState(activeQuota, observedQuota)).toBe(activeQuota);
+  });
+
+  it('keeps a manual Codex inventory when its timestamp equals the Header snapshot', () => {
+    const activeQuota: CodexQuotaState = {
+      status: 'success',
+      fetchedAtMs: 2_000,
+      quotaInventoryObserved: true,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          usedPercent: 20,
+          resetLabel: '07/07 12:00',
+        },
+      ],
+    };
+    const observedQuota: CodexQuotaState = {
+      status: 'success',
+      observedAtMs: 2_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          usedPercent: 80,
+          resetLabel: '07/07 13:00',
+        },
+      ],
+    };
+
+    expect(resolveQuotaDisplayState(activeQuota, observedQuota)).toBe(activeQuota);
+  });
+
+  it('does not append older Header-only windows to a newer complete manual inventory', () => {
+    const activeQuota: CodexQuotaState = {
+      status: 'success',
+      fetchedAtMs: 2_000,
+      quotaInventoryObserved: true,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          usedPercent: 20,
+          resetLabel: '07/07 12:00',
+        },
+      ],
+    };
+    const observedQuota: CodexQuotaState = {
+      status: 'success',
+      observedAtMs: 1_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'five-hour',
+          label: '5-hour limit',
+          usedPercent: 80,
+          resetLabel: '07/01 13:00',
+        },
+      ],
+    };
+
+    const result = resolveQuotaDisplayState(activeQuota, observedQuota) as CodexQuotaState;
+
+    expect(result).toBe(activeQuota);
+    expect(result.windows.map((window) => window.id)).toEqual(['weekly']);
+  });
+
+  it('adds missing Header windows to a newer partial Codex inventory without retagging API windows', () => {
+    const activeQuota: CodexQuotaState = {
+      status: 'success',
+      fetchedAtMs: 2_000,
+      quotaInventoryObserved: false,
+      planType: 'plus',
+      windows: [
+        {
+          id: 'code-review-weekly',
+          label: 'Code review weekly',
+          usedPercent: 15,
+          resetLabel: '07/07 12:00',
+          limitWindowSeconds: 604_800,
+        },
+      ],
+    };
+    const observedQuota: CodexQuotaState = {
+      status: 'success',
+      observedAtMs: 1_000,
+      observedFromUsageHeaders: true,
+      planType: 'free',
+      windows: [
+        {
+          id: 'five-hour',
+          label: '5-hour limit',
+          usedPercent: 40,
+          resetLabel: '07/01 12:00',
+          limitWindowSeconds: 18_000,
+        },
+      ],
+    };
+
+    const result = resolveQuotaDisplayState(activeQuota, observedQuota) as CodexQuotaState;
+
+    expect(result.planType).toBe('plus');
+    expect(result.windows).toMatchObject([
+      {
+        id: 'code-review-weekly',
+        observationSource: 'api_query',
+        observedAtMs: 2_000,
+      },
+      {
+        id: 'five-hour',
+        observationSource: 'response_header',
+        observedAtMs: 1_000,
+      },
+    ]);
+  });
+
+  it('does not append a legacy Spark alias when the partial inventory already has the canonical window', () => {
+    const sparkScope = {
+      kind: 'models' as const,
+      models: [CODEX_SPARK_MODEL_ID],
+      complete: true,
+    };
+    const activeQuota: CodexQuotaState = {
+      status: 'success',
+      fetchedAtMs: 2_000,
+      quotaInventoryObserved: false,
+      windows: [
+        {
+          id: 'spark-weekly-0',
+          label: 'Spark weekly',
+          resetLabel: '-',
+          usedPercent: 0,
+          modelScope: sparkScope,
+          providerWindowAliases: ['fast-coding-weekly-0'],
+        },
+      ],
+    };
+    const observedQuota: CodexQuotaState = {
+      status: 'success',
+      observedAtMs: 1_000,
+      observedFromUsageHeaders: true,
+      observedModelScope: sparkScope,
+      windows: [
+        {
+          id: 'fast-coding-weekly-0',
+          label: 'Spark weekly',
+          resetLabel: '-',
+          usedPercent: 0,
+          modelScope: sparkScope,
+        },
+      ],
+    };
+
+    const result = resolveQuotaDisplayState(activeQuota, observedQuota) as CodexQuotaState;
+
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0].id).toBe('spark-weekly-0');
   });
 
   it('merges a newer header snapshot into the manual quota refresh', () => {
@@ -396,6 +495,46 @@ describe('resolveQuotaDisplayState', () => {
     });
   });
 
+  it('does not retain an older reset timestamp behind a newer reset label', () => {
+    const activeQuota: CodexQuotaState = {
+      status: 'success',
+      fetchedAtMs: 1_000,
+      windows: [
+        {
+          id: 'five-hour',
+          label: '5-hour limit',
+          usedPercent: 10,
+          resetLabel: '2026-07-01T01:00:00Z',
+          resetAtMs: Date.parse('2026-07-01T01:00:00Z'),
+          resetAccuracy: 'exact',
+        },
+      ],
+    };
+    const observedQuota: CodexQuotaState = {
+      status: 'success',
+      observedAtMs: 2_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'five-hour',
+          label: '5-hour limit',
+          usedPercent: 80,
+          resetLabel: 'resets after the next request window',
+          resetAtMs: null,
+          resetAccuracy: 'unknown',
+        },
+      ],
+    };
+
+    const result = resolveQuotaDisplayState(activeQuota, observedQuota) as CodexQuotaState;
+
+    expect(result.windows[0]).toMatchObject({
+      resetLabel: 'resets after the next request window',
+      resetAtMs: null,
+      resetAccuracy: 'unknown',
+    });
+  });
+
   it('keeps 401 quota errors so reauth controls stay visible', () => {
     const activeQuota: TestQuotaState = {
       status: 'error',
@@ -523,5 +662,235 @@ describe('resolveQuotaDisplayState', () => {
       usedPercent: 30,
       resetLabel: '07/01 01:00',
     });
+  });
+
+  it('does not let scoped Header scalars replace account-wide Codex state', () => {
+    const activeQuota: CodexQuotaState = {
+      status: 'success',
+      fetchedAtMs: 1_000,
+      activeLimit: 'main',
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          usedPercent: 36,
+          resetLabel: '07/07 00:00',
+          modelScope: { kind: 'family', key: 'codex_main', complete: true },
+        },
+      ],
+    };
+    const sparkScope = {
+      kind: 'models' as const,
+      models: [CODEX_SPARK_MODEL_ID],
+      complete: true,
+    };
+    const observedQuota: CodexQuotaState = {
+      status: 'success',
+      observedFromUsageHeaders: true,
+      observedAtMs: 2_000,
+      observedModelScope: sparkScope,
+      activeLimit: 'spark',
+      windows: [
+        {
+          id: 'spark-weekly-0',
+          label: 'Spark weekly limit',
+          usedPercent: 0,
+          resetLabel: '07/07 00:00',
+          modelScope: sparkScope,
+        },
+      ],
+    };
+
+    const result = resolveQuotaDisplayState(activeQuota, observedQuota) as CodexQuotaState;
+
+    expect(result.activeLimit).toBe('main');
+    expect(result.windows.map((window) => window.id)).toEqual(['weekly', 'spark-weekly-0']);
+  });
+
+  it('merges a legacy Spark window into the canonical header window instead of duplicating it', () => {
+    const sparkScope = {
+      kind: 'models' as const,
+      models: [CODEX_SPARK_MODEL_ID],
+      complete: true,
+    };
+    const result = resolveQuotaDisplayState(
+      {
+        status: 'success',
+        fetchedAtMs: 1_000,
+        quotaInventoryObserved: true,
+        windows: [
+          {
+            id: 'fast-coding-weekly-0',
+            usedPercent: 50,
+            modelScope: sparkScope,
+          },
+        ],
+      },
+      {
+        status: 'success',
+        observedAtMs: 2_000,
+        observedFromUsageHeaders: true,
+        observedModelScope: sparkScope,
+        windows: [
+          {
+            id: 'spark-weekly-0',
+            usedPercent: 0,
+            modelScope: sparkScope,
+            providerWindowAliases: ['fast-coding-weekly-0'],
+          },
+        ],
+      }
+    ) as CodexQuotaState;
+
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]).toMatchObject({ id: 'spark-weekly-0', usedPercent: 0 });
+    expect(result.windows[0].providerWindowAliases).toContain('fast-coding-weekly-0');
+  });
+
+  it('does not resolve an ambiguous secondary alias between weekly and monthly windows', () => {
+    const result = resolveQuotaDisplayState(
+      {
+        status: 'success',
+        fetchedAtMs: 1_000,
+        quotaInventoryObserved: true,
+        windows: [
+          {
+            id: 'weekly',
+            usedPercent: 36,
+            modelScope: { kind: 'family', key: 'codex_main', complete: true },
+            providerWindowAliases: ['secondary'],
+          },
+          {
+            id: 'monthly',
+            usedPercent: 10,
+            modelScope: { kind: 'family', key: 'codex_main', complete: true },
+            providerWindowAliases: ['secondary'],
+          },
+        ],
+      },
+      {
+        status: 'success',
+        observedAtMs: 2_000,
+        observedFromUsageHeaders: true,
+        observedModelScope: { kind: 'family', key: 'codex_main', complete: true },
+        windows: [
+          {
+            id: 'monthly',
+            usedPercent: 45,
+            modelScope: { kind: 'family', key: 'codex_main', complete: true },
+            providerWindowAliases: ['secondary'],
+          },
+        ],
+      }
+    ) as CodexQuotaState;
+
+    expect(result.windows).toEqual([
+      expect.objectContaining({ id: 'weekly', usedPercent: 36 }),
+      expect.objectContaining({ id: 'monthly', usedPercent: 45 }),
+    ]);
+  });
+});
+
+describe('Codex plan precedence', () => {
+  const t = ((key: string) => key) as TFunction;
+
+  it('uses a newer observed header plan before the credential token plan', () => {
+    const state = buildObservedCodexQuotaState(
+      {
+        name: 'stale-plan.codex.json',
+        type: 'codex',
+        id_token: { plan_type: 'plus' },
+      },
+      {
+        event_hash: 'event-1',
+        timestamp_ms: 2_000,
+        model: 'gpt-5.6-sol',
+        header_quota_plan_type: 'free',
+        header_quota_used_percent: 25,
+      },
+      t
+    );
+
+    expect(state?.planType).toBe('free');
+  });
+
+  it('drops an expired Header 5-hour window while retaining the active weekly window', () => {
+    const nowMs = 1_800_000_000_000;
+    const state = buildObservedCodexQuotaState(
+      { name: 'mixed-window.codex.json', type: 'codex' },
+      {
+        event_hash: 'mixed-window-event',
+        timestamp_ms: nowMs - 60_000,
+        model: 'gpt-5.6-sol',
+        response_metadata: {
+          quota: {
+            primary: {
+              used_percent: 100,
+              reset_at_ms: nowMs - 1,
+              window_minutes: 300,
+            },
+            secondary: {
+              used_percent: 40,
+              reset_at_ms: nowMs + 60_000,
+              window_minutes: 10_080,
+            },
+          },
+        },
+      },
+      t,
+      nowMs
+    );
+
+    expect(state?.windows).toMatchObject([
+      {
+        id: 'weekly',
+        usedPercent: 40,
+        observationSource: 'response_header',
+        observedAtMs: nowMs - 60_000,
+      },
+    ]);
+  });
+
+  it('builds a Spark-scoped Header observation from an alias-resolved request', () => {
+    const nowMs = 1_800_000_000_000;
+    const state = buildObservedCodexQuotaState(
+      { name: 'spark.codex.json', type: 'codex' },
+      {
+        event_hash: 'spark-alias-event',
+        timestamp_ms: nowMs - 1_000,
+        model: 'my-spark',
+        analytics_model: 'my-spark',
+        requested_model: 'my-spark',
+        resolved_model: CODEX_SPARK_MODEL_ID,
+        response_metadata: {
+          quota: {
+            primary: {
+              used_percent: 0,
+              reset_at_ms: nowMs + 7 * 24 * 60 * 60 * 1000,
+              window_minutes: 10_080,
+            },
+          },
+        },
+      },
+      t,
+      nowMs
+    );
+
+    expect(state?.observedModelScope).toEqual({
+      kind: 'models',
+      models: [CODEX_SPARK_MODEL_ID],
+      complete: true,
+    });
+    expect(state?.windows).toMatchObject([
+      {
+        id: 'spark-weekly-0',
+        usedPercent: 0,
+        modelScope: {
+          kind: 'models',
+          models: [CODEX_SPARK_MODEL_ID],
+          complete: true,
+        },
+      },
+    ]);
   });
 });

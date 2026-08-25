@@ -136,6 +136,7 @@ const createResultItem = (
   error: overrides.error ?? '',
   planType: overrides.planType ?? null,
   quotaWindows: overrides.quotaWindows ?? [],
+  quotaInventoryObserved: overrides.quotaInventoryObserved,
   errorKind: overrides.errorKind ?? '',
   errorDetail: overrides.errorDetail ?? '',
   actionHandled: overrides.actionHandled ?? false,
@@ -235,6 +236,8 @@ describe('credential inspection state labels', () => {
     expect(serverInspectionPageSource).not.toContain("reasonParts.join(' · ')");
     expect(serverInspectionPageSource).not.toContain('formatServerResultStateDetail');
     expect(serverInspectionPageSource).toContain('formatServerTerminalActionStatusLabel');
+    expect(serverInspectionPageSource).toContain('runtimeId: item.runtimeId ?? null');
+    expect(serverInspectionPageSource).toContain('accountSnapshot: item.accountSnapshot ?? null');
     expect(serverInspectionPageSource).toContain("errorDetail: item.errorDetail || ''");
     expect(serverInspectionPageSource).not.toContain('item.actionError || item.errorDetail');
     expect(serverInspectionPageSource).toContain('const actionError = source.actionError?.trim()');
@@ -629,6 +632,23 @@ describe('Codex inspection error summaries', () => {
 });
 
 describe('local inspection lifecycle log details', () => {
+  it('pins auth-file loading and probes to the connection captured at session start', async () => {
+    const listSpy = vi.spyOn(authFilesApi, 'list').mockResolvedValue({ files: [] });
+
+    await inspectCodexAccounts({
+      config: null,
+      apiBase: 'https://captured-cpa.example.test',
+      managementKey: 'captured-management-key',
+      settings: { targetTypes: ['codex'], sampleSize: 0 },
+      t: translateEn,
+    });
+
+    expect(listSpy).toHaveBeenCalledWith({
+      apiBase: 'https://captured-cpa.example.test',
+      managementKey: 'captured-management-key',
+    });
+  });
+
   it('emits server-shaped details for loading, collection, and completion', async () => {
     vi.spyOn(authFilesApi, 'list').mockResolvedValue({ files: [] });
     const logs: Array<{
@@ -4632,6 +4652,15 @@ describe('Codex inspection last-run cache', () => {
     );
   });
 
+  it('guards embedded local snapshots by the active connection fingerprint', () => {
+    expect(localInspectionPageSource).toContain(
+      'resultConnectionFingerprint !== connectionFingerprint'
+    );
+    expect(localInspectionPageSource).toContain(
+      '[connectionFingerprint, onSnapshotChange, result, resultConnectionFingerprint, runStatus]'
+    );
+  });
+
   it('sanitizes raw auth data before saving browser cache', () => {
     const storage = createStorage();
     vi.stubGlobal('localStorage', storage);
@@ -4849,13 +4878,24 @@ describe('Codex inspection last-run cache', () => {
           usedPercent: 87,
           isQuota: true,
           planType: 'team',
+          quotaInventoryObserved: true,
           quotaWindows: [
             {
               id: 'monthly',
               labelKey: 'codex_quota.monthly_window',
               usedPercent: 87,
               resetLabel: '06/18 12:00',
+              resetAtMs: Date.parse('2026-06-18T04:00:00Z'),
+              resetAccuracy: 'exact',
               limitWindowSeconds: 2_592_000,
+              modelScope: { kind: 'family', key: 'codex_main', complete: true },
+            },
+            {
+              id: 'gpt-5-3-codex-spark-weekly-0',
+              labelKey: 'codex_quota.additional_secondary_window',
+              usedPercent: 0,
+              resetLabel: '06/20 12:00',
+              limitWindowSeconds: 604_800,
             },
           ],
           error: 'HTTP 402',
@@ -4869,6 +4909,7 @@ describe('Codex inspection last-run cache', () => {
 
     const loaded = loadCodexInspectionLastRun();
     expect(loaded?.result.results[0].planType).toBe('team');
+    expect(loaded?.result.results[0].quotaInventoryObserved).toBe(true);
     expect(loaded?.result.results[0].quotaWindows).toEqual([
       {
         id: 'monthly',
@@ -4876,11 +4917,107 @@ describe('Codex inspection last-run cache', () => {
         labelParams: undefined,
         usedPercent: 87,
         resetLabel: '06/18 12:00',
+        resetAtMs: Date.parse('2026-06-18T04:00:00Z'),
+        resetAccuracy: 'exact',
         limitWindowSeconds: 2_592_000,
+        modelScope: { kind: 'family', key: 'codex_main', models: undefined, complete: true },
+      },
+      {
+        id: 'spark-weekly-0',
+        labelKey: 'codex_quota.additional_secondary_window',
+        labelParams: undefined,
+        usedPercent: 0,
+        resetLabel: '06/20 12:00',
+        limitWindowSeconds: 604_800,
+        modelScope: {
+          kind: 'models',
+          key: undefined,
+          models: ['gpt-5.3-codex-spark'],
+          complete: true,
+        },
       },
     ]);
     expect(loaded?.result.results[0].errorKind).toBe('http_status');
     expect(loaded?.result.results[0].errorDetail).toContain('limit reached');
+  });
+
+  it('reclassifies legacy Spark inspection windows that were persisted as account-wide', () => {
+    const storage = createStorage();
+    vi.stubGlobal('localStorage', storage);
+    const baseResult = createRunResult();
+
+    storage.setItem(
+      CODEX_INSPECTION_LAST_RUN_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        savedAt: 2000,
+        result: {
+          ...baseResult,
+          results: [
+            createResultItem('keep', {
+              quotaWindows: [
+                {
+                  id: 'fast-coding-weekly-0',
+                  labelKey: 'codex_quota.additional_secondary_window',
+                  usedPercent: 0,
+                  resetLabel: '06/20 12:00',
+                  limitWindowSeconds: 604_800,
+                  modelScope: { kind: 'all', complete: true },
+                },
+              ],
+            }),
+          ],
+        },
+        logs: [],
+      })
+    );
+
+    const loaded = loadCodexInspectionLastRun();
+    expect(loaded?.result.results[0].quotaWindows).toEqual([
+      expect.objectContaining({
+        id: 'fast-coding-weekly-0',
+        modelScope: {
+          kind: 'models',
+          models: ['gpt-5.3-codex-spark'],
+          complete: true,
+        },
+      }),
+    ]);
+  });
+
+  it('restores a legacy Team monthly secondary window using its duration', () => {
+    const baseResult = createRunResult();
+    const restored = hydrateCodexInspectionLastRun({
+      version: 1,
+      savedAt: 2000,
+      result: {
+        ...baseResult,
+        results: [
+          createResultItem('keep', {
+            planType: 'team',
+            quotaWindows: [
+              {
+                id: 'secondary',
+                labelKey: 'codex_quota.monthly_window',
+                usedPercent: 12,
+                resetLabel: '07/20 12:00',
+                limitWindowSeconds: 2_592_000,
+                modelScope: { kind: 'all', complete: true },
+              },
+            ],
+          }),
+        ],
+      },
+      logs: [],
+    });
+
+    expect(restored?.result.results[0].quotaWindows).toEqual([
+      expect.objectContaining({
+        id: 'monthly',
+        limitWindowSeconds: 2_592_000,
+        modelScope: { kind: 'family', key: 'codex_main', complete: true },
+      }),
+    ]);
   });
 
   it('stores and restores terminal local action handling state', () => {

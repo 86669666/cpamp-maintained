@@ -2,7 +2,7 @@
  * 认证文件与 OAuth 排除模型相关 API
  */
 
-import { apiClient } from './client';
+import { apiClient, createScopedApiRequestConfig, type ApiClientRequestScope } from './client';
 import type { AuthFilesResponse } from '@/types/authFile';
 import type { AuthFileItem, OAuthModelAliasEntry } from '@/types';
 import {
@@ -14,6 +14,7 @@ import { sha256RawTextHex } from '@/utils/apiKeyHash';
 import { parseTimestampMs } from '@/utils/timestamp';
 
 type StatusError = { status?: number };
+export type AuthFilesApiRequestScope = ApiClientRequestScope;
 type AuthFileStatusResponse = { status: string; disabled: boolean };
 export type AuthFileStatusMutationResult = AuthFileStatusResponse & {
   mutationScope: 'credential' | 'source-file';
@@ -31,16 +32,54 @@ export type AuthFilePluginSourceFallbackVerifier = () => Promise<void>;
 export type AuthFileStatusPluginSourceFallbackVerifier = () => Promise<AuthFileStatusTarget[]>;
 type AuthFileEntry = AuthFilesResponse['files'][number];
 type AuthFileJsonValue = Record<string, unknown> | Record<string, unknown>[];
+type AuthFileModelApiItem = {
+  id: string;
+  display_name?: string;
+  type?: string;
+  owned_by?: string;
+};
 export type AuthFileFieldsPatch = {
   expired?: string;
   last_refresh?: string;
   prefix?: string;
   proxy_url?: string;
+  proxyUrl?: null;
+  'proxy-url'?: null;
+  base_url?: string;
+  baseUrl?: null;
+  'base-url'?: null;
   websockets?: boolean;
   using_api?: boolean;
+  usingApi?: null;
+  'using-api'?: null;
   headers?: Record<string, string>;
   priority?: number;
+  weight?: number | null;
   note?: string;
+  'excluded-models'?: string[] | null;
+  excluded_models?: string[] | null;
+  excludedModels?: null;
+  disable_cooling?: boolean | null;
+  disableCooling?: null;
+  'disable-cooling'?: null;
+  request_retry?: number | null;
+  'request-retry'?: null;
+  requestRetry?: null;
+  cloak_mode?: string;
+  cloakMode?: null;
+  'cloak-mode'?: null;
+  cloak_strict_mode?: string;
+  cloakStrictMode?: null;
+  'cloak-strict-mode'?: null;
+  cloak_sensitive_words?: string;
+  cloakSensitiveWords?: null;
+  'cloak-sensitive-words'?: null;
+  cloak_cache_user_id?: string;
+  cloakCacheUserId?: null;
+  'cloak-cache-user-id'?: null;
+  tool_prefix_disabled?: boolean;
+  'tool-prefix-disabled'?: null;
+  toolPrefixDisabled?: null;
 };
 export type AuthFilePatchAuthIndex = string | number;
 type AuthFileBatchFailure = { name: string; error: string };
@@ -83,6 +122,31 @@ const getStatusCode = (err: unknown): number | undefined => {
   if (!err || typeof err !== 'object') return undefined;
   if ('status' in err) return (err as StatusError).status;
   return undefined;
+};
+
+const normalizeAuthFileModelItems = (value: unknown): AuthFileModelApiItem[] => {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: AuthFileModelApiItem[] = [];
+  value.forEach((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+    const raw = entry as Record<string, unknown>;
+    const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+    if (!id) return;
+    const key = id.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const item: AuthFileModelApiItem = { id };
+    if (typeof raw.display_name === 'string' && raw.display_name.trim()) {
+      item.display_name = raw.display_name.trim();
+    }
+    if (typeof raw.type === 'string' && raw.type.trim()) item.type = raw.type.trim();
+    if (typeof raw.owned_by === 'string' && raw.owned_by.trim()) {
+      item.owned_by = raw.owned_by.trim();
+    }
+    result.push(item);
+  });
+  return result;
 };
 
 const isCPAPluginVirtualMutationConflict = (err: unknown): boolean =>
@@ -186,16 +250,23 @@ const readUploadErrorMessage = (err: unknown): string => {
 
 const uploadSingleAuthFile = async (
   file: File,
-  headers: Record<string, string> = {}
+  headers: Record<string, string> = {},
+  requestScope?: AuthFilesApiRequestScope
 ): Promise<AuthFileBatchUploadResult> => {
   const formData = new FormData();
   formData.append('file', file, file.name);
-  const payload =
-    Object.keys(headers).length > 0
-      ? await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData, {
-          headers,
-        })
-      : await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData);
+  const scopedRequestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : null;
+  const requestConfig = scopedRequestConfig
+    ? {
+        ...scopedRequestConfig,
+        headers: { ...scopedRequestConfig.headers, ...headers },
+      }
+    : Object.keys(headers).length > 0
+      ? { headers }
+      : undefined;
+  const payload = requestConfig
+    ? await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData, requestConfig)
+    : await apiClient.postForm<AuthFileBatchUploadResponse>('/auth-files', formData);
   return normalizeBatchUploadResponse(payload, [file.name]);
 };
 
@@ -322,7 +393,8 @@ const buildAuthFileIdentityHeaders = (
 const deleteAuthFileBySelector = async (
   selector: string,
   physicalName: string,
-  identityTargets: AuthFileDeleteIdentityTarget[] = []
+  identityTargets: AuthFileDeleteIdentityTarget[] = [],
+  requestScope?: AuthFilesApiRequestScope
 ): Promise<AuthFileBatchDeleteResult> => {
   const encodedDeleteIdentities = encodeAuthFileIdentityTargets(identityTargets);
   const headers: Record<string, string> = {
@@ -333,9 +405,15 @@ const deleteAuthFileBySelector = async (
   }
   const payload = await apiClient.delete<AuthFileBatchDeleteResponse>(
     `/auth-files?name=${encodeURIComponent(selector)}`,
-    {
-      headers,
-    }
+    requestScope
+      ? (() => {
+          const scopedRequestConfig = createScopedApiRequestConfig(requestScope);
+          return {
+            ...scopedRequestConfig,
+            headers: { ...scopedRequestConfig.headers, ...headers },
+          };
+        })()
+      : { headers }
   );
   return normalizeSingleDeleteResponse(payload, selector, physicalName);
 };
@@ -525,14 +603,38 @@ const normalizePatchAuthIndex = (value: unknown): string => {
   return String(value).trim();
 };
 
-const readPatchRecordAuthIndex = (record: Record<string, unknown>): string =>
-  normalizePatchAuthIndex(record.authIndex ?? record['auth_index'] ?? record['auth-index']);
+const normalizePatchProviderIdentity = (value: unknown): string => {
+  const provider = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, '-');
+  if (provider === 'x-ai' || provider === 'grok') return 'xai';
+  return provider === 'gemini' ? 'gemini-cli' : provider;
+};
 
-const applyFieldsPatchToAuthRecord = (
+const readPatchRecordAuthIndex = (record: Record<string, unknown>, arrayIndex?: number): string => {
+  const explicit = normalizePatchAuthIndex(
+    record.authIndex ?? record['auth_index'] ?? record['auth-index']
+  );
+  if (explicit) return explicit;
+  return arrayIndex === undefined ? '' : String(arrayIndex);
+};
+
+export const applyAuthFileFieldsPatchToRecord = (
   record: Record<string, unknown>,
   fields: AuthFileFieldsPatch
 ): Record<string, unknown> => {
   const next = { ...record };
+
+  const applyTrimmedString = (key: string, value: string | undefined) => {
+    if (value === undefined) return;
+    const normalized = value.trim();
+    if (normalized) {
+      next[key] = normalized;
+    } else {
+      delete next[key];
+    }
+  };
 
   if (fields.expired !== undefined) {
     const value = fields.expired.trim();
@@ -569,12 +671,26 @@ const applyFieldsPatchToAuthRecord = (
       delete next.proxy_url;
     }
   }
+  if (fields.proxyUrl === null) delete next.proxyUrl;
+  if (fields['proxy-url'] === null) delete next['proxy-url'];
+
+  applyTrimmedString('base_url', fields.base_url);
+  if (fields.baseUrl === null) delete next.baseUrl;
+  if (fields['base-url'] === null) delete next['base-url'];
 
   if (fields.priority !== undefined) {
     if (fields.priority === 0) {
       delete next.priority;
     } else {
       next.priority = fields.priority;
+    }
+  }
+
+  if (fields.weight !== undefined) {
+    if (fields.weight === null) {
+      delete next.weight;
+    } else {
+      next.weight = fields.weight;
     }
   }
 
@@ -586,6 +702,69 @@ const applyFieldsPatchToAuthRecord = (
       delete next.note;
     }
   }
+
+  const excludedModelsPatch =
+    fields['excluded-models'] !== undefined ? fields['excluded-models'] : fields.excluded_models;
+  if (excludedModelsPatch !== undefined) {
+    if (excludedModelsPatch === null) {
+      delete next['excluded-models'];
+      delete next.excluded_models;
+    } else {
+      const models = excludedModelsPatch.map((model) => model.trim()).filter(Boolean);
+      if (models.length > 0) {
+        next['excluded-models'] = models;
+      } else {
+        delete next['excluded-models'];
+      }
+      delete next.excluded_models;
+    }
+  }
+  if (fields.excludedModels === null) delete next.excludedModels;
+
+  if (fields.disable_cooling !== undefined) {
+    if (fields.disable_cooling === null) {
+      delete next.disable_cooling;
+    } else {
+      next.disable_cooling = fields.disable_cooling;
+    }
+    delete next.disableCooling;
+    delete next['disable-cooling'];
+  }
+  if (fields.disableCooling === null) delete next.disableCooling;
+  if (fields['disable-cooling'] === null) delete next['disable-cooling'];
+
+  if (fields.request_retry !== undefined) {
+    if (fields.request_retry === null) {
+      delete next.request_retry;
+    } else {
+      next.request_retry = fields.request_retry;
+    }
+  }
+  if (fields['request-retry'] === null) delete next['request-retry'];
+  if (fields.requestRetry === null) delete next.requestRetry;
+
+  applyTrimmedString('cloak_mode', fields.cloak_mode);
+  if (fields.cloakMode === null) delete next.cloakMode;
+  if (fields['cloak-mode'] === null) delete next['cloak-mode'];
+  applyTrimmedString('cloak_strict_mode', fields.cloak_strict_mode);
+  if (fields.cloakStrictMode === null) delete next.cloakStrictMode;
+  if (fields['cloak-strict-mode'] === null) delete next['cloak-strict-mode'];
+  applyTrimmedString('cloak_sensitive_words', fields.cloak_sensitive_words);
+  if (fields.cloakSensitiveWords === null) delete next.cloakSensitiveWords;
+  if (fields['cloak-sensitive-words'] === null) delete next['cloak-sensitive-words'];
+  applyTrimmedString('cloak_cache_user_id', fields.cloak_cache_user_id);
+  if (fields.cloakCacheUserId === null) delete next.cloakCacheUserId;
+  if (fields['cloak-cache-user-id'] === null) delete next['cloak-cache-user-id'];
+
+  if (fields.tool_prefix_disabled !== undefined) {
+    if (fields.tool_prefix_disabled) {
+      next.tool_prefix_disabled = true;
+    } else {
+      delete next.tool_prefix_disabled;
+    }
+  }
+  if (fields['tool-prefix-disabled'] === null) delete next['tool-prefix-disabled'];
+  if (fields.toolPrefixDisabled === null) delete next.toolPrefixDisabled;
 
   if (fields.headers !== undefined) {
     const currentHeaders =
@@ -617,6 +796,8 @@ const applyFieldsPatchToAuthRecord = (
   if (fields.using_api !== undefined) {
     next.using_api = fields.using_api;
   }
+  if (fields.usingApi === null) delete next.usingApi;
+  if (fields['using-api'] === null) delete next['using-api'];
 
   return next;
 };
@@ -632,8 +813,8 @@ const patchAuthFileJsonValueByAuthIndexes = (
 
   if (targetIndexes.size === 0) {
     return Array.isArray(value)
-      ? value.map((record) => applyFieldsPatchToAuthRecord(record, fields))
-      : applyFieldsPatchToAuthRecord(value, fields);
+      ? value.map((record) => applyAuthFileFieldsPatchToRecord(record, fields))
+      : applyAuthFileFieldsPatchToRecord(value, fields);
   }
 
   if (!Array.isArray(value)) {
@@ -641,17 +822,17 @@ const patchAuthFileJsonValueByAuthIndexes = (
     if (recordAuthIndex && !targetIndexes.has(recordAuthIndex)) {
       throw new Error('Auth index not found');
     }
-    return applyFieldsPatchToAuthRecord(value, fields);
+    return applyAuthFileFieldsPatchToRecord(value, fields);
   }
 
   const matchedIndexes = new Set<string>();
-  const nextValue = value.map((record) => {
-    const recordAuthIndex = readPatchRecordAuthIndex(record);
+  const nextValue = value.map((record, index) => {
+    const recordAuthIndex = readPatchRecordAuthIndex(record, index);
     if (!recordAuthIndex || !targetIndexes.has(recordAuthIndex)) {
       return record;
     }
     matchedIndexes.add(recordAuthIndex);
-    return applyFieldsPatchToAuthRecord(record, fields);
+    return applyAuthFileFieldsPatchToRecord(record, fields);
   });
 
   if (matchedIndexes.size !== targetIndexes.size) {
@@ -666,8 +847,9 @@ const authFileRecordMatchesPatchTarget = (
   target: AuthFileStatusTarget
 ): boolean => {
   const authFileRecord = { name: '', ...record } as AuthFileItem;
-  const expectedProvider = String(target.provider ?? '').trim();
-  if (expectedProvider && readAuthFileStatusProvider(authFileRecord) !== expectedProvider) {
+  const expectedProvider = normalizePatchProviderIdentity(target.provider);
+  const actualProvider = normalizePatchProviderIdentity(readAuthFileStatusProvider(authFileRecord));
+  if (expectedProvider && actualProvider && actualProvider !== expectedProvider) {
     return false;
   }
 
@@ -711,7 +893,7 @@ const verifyAuthFileJsonPatchTargets = (
     const expectedAuthIndex = normalizePatchAuthIndex(target.authIndex);
     if (!expectedAuthIndex) throw new Error('Auth file patch target changed');
     const matches = value.filter(
-      (record) => readPatchRecordAuthIndex(record) === expectedAuthIndex
+      (record, index) => readPatchRecordAuthIndex(record, index) === expectedAuthIndex
     );
     if (matches.length !== 1 || !authFileRecordMatchesPatchTarget(matches[0], target)) {
       throw new Error('Auth file patch target changed');
@@ -722,10 +904,11 @@ const verifyAuthFileJsonPatchTargets = (
 const saveAuthFileText = async (
   name: string,
   text: string,
-  headers: Record<string, string> = {}
+  headers: Record<string, string> = {},
+  requestScope?: AuthFilesApiRequestScope
 ) => {
   const file = new File([text], name, { type: 'application/json' });
-  const result = await uploadSingleAuthFile(file, headers);
+  const result = await uploadSingleAuthFile(file, headers, requestScope);
   const normalizedStatus = result.status.trim().toLowerCase();
   const hasExplicitFailureStatus =
     normalizedStatus === 'error' || normalizedStatus === 'failed' || normalizedStatus === 'partial';
@@ -807,10 +990,14 @@ const normalizeOauthModelAlias = (payload: unknown): Record<string, OAuthModelAl
           entry['force-mapping'] === true ||
           entry.forceMapping === true ||
           entry.force_mapping === true;
+        const displayName = String(
+          entry['display-name'] ?? entry.displayName ?? entry.display_name ?? ''
+        ).trim();
         return {
           name,
           alias,
           ...(fork ? { fork: true } : {}),
+          ...(displayName ? { displayName } : {}),
           ...(forceMapping ? { forceMapping: true } : {}),
         };
       })
@@ -908,33 +1095,58 @@ const buildAuthFileStatusPayload = (
 };
 
 export const authFilesApi = {
-  list: async () => dedupeAuthFilesResponse(await apiClient.get<AuthFilesResponse>('/auth-files')),
+  list: async (requestScope?: AuthFilesApiRequestScope) => {
+    const response = requestScope
+      ? await apiClient.get<AuthFilesResponse>(
+          '/auth-files',
+          createScopedApiRequestConfig(requestScope)
+        )
+      : await apiClient.get<AuthFilesResponse>('/auth-files');
+    return dedupeAuthFilesResponse(response);
+  },
 
-  setStatus: (target: AuthFileStatusTarget, disabled: boolean) =>
-    apiClient.patch<AuthFileStatusResponse>(
-      '/auth-files/status',
-      buildAuthFileStatusPayload(target, disabled)
-    ),
+  setStatus: (
+    target: AuthFileStatusTarget,
+    disabled: boolean,
+    requestScope?: AuthFilesApiRequestScope
+  ) => {
+    const payload = buildAuthFileStatusPayload(target, disabled);
+    return requestScope
+      ? apiClient.patch<AuthFileStatusResponse>(
+          '/auth-files/status',
+          payload,
+          createScopedApiRequestConfig(requestScope)
+        )
+      : apiClient.patch<AuthFileStatusResponse>('/auth-files/status', payload);
+  },
 
   setVerifiedSourceFileStatus: async (
     target: AuthFileStatusTarget,
     disabled: boolean,
-    sourceIdentities: AuthFileStatusTarget[]
+    sourceIdentities: AuthFileStatusTarget[],
+    requestScope?: AuthFilesApiRequestScope
   ): Promise<AuthFileStatusMutationResult> => {
-    const response = await apiClient.patch<AuthFileStatusResponse>(
-      '/auth-files/status',
-      buildAuthFileStatusPayload(target, disabled, true, sourceIdentities)
-    );
+    const payload = buildAuthFileStatusPayload(target, disabled, true, sourceIdentities);
+    const response = requestScope
+      ? await apiClient.patch<AuthFileStatusResponse>(
+          '/auth-files/status',
+          payload,
+          createScopedApiRequestConfig(requestScope)
+        )
+      : await apiClient.patch<AuthFileStatusResponse>('/auth-files/status', payload);
     return { ...response, mutationScope: 'source-file' };
   },
 
   setStatusWithPluginSourceFallback: async (
     target: AuthFileStatusTarget,
     disabled: boolean,
-    verifyPluginSourceFallback?: AuthFileStatusPluginSourceFallbackVerifier
+    verifyPluginSourceFallback?: AuthFileStatusPluginSourceFallbackVerifier,
+    requestScope?: AuthFilesApiRequestScope
   ): Promise<AuthFileStatusMutationResult> => {
     try {
-      const response = await authFilesApi.setStatus(target, disabled);
+      const response = requestScope
+        ? await authFilesApi.setStatus(target, disabled, requestScope)
+        : await authFilesApi.setStatus(target, disabled);
       return { ...response, mutationScope: 'credential' };
     } catch (err: unknown) {
       const physicalName = target.name.trim();
@@ -951,34 +1163,55 @@ export const authFilesApi = {
         throw err;
       }
       const sourceIdentities = await verifyPluginSourceFallback();
-      return authFilesApi.setVerifiedSourceFileStatus(target, disabled, sourceIdentities);
+      return requestScope
+        ? authFilesApi.setVerifiedSourceFileStatus(target, disabled, sourceIdentities, requestScope)
+        : authFilesApi.setVerifiedSourceFileStatus(target, disabled, sourceIdentities);
     }
   },
 
   setStatusWithFallback: (
     target: AuthFileStatusTarget,
     disabled: boolean,
-    verifyPluginSourceFallback?: AuthFileStatusPluginSourceFallbackVerifier
-  ) => authFilesApi.setStatusWithPluginSourceFallback(target, disabled, verifyPluginSourceFallback),
+    verifyPluginSourceFallback?: AuthFileStatusPluginSourceFallbackVerifier,
+    requestScope?: AuthFilesApiRequestScope
+  ) =>
+    authFilesApi.setStatusWithPluginSourceFallback(
+      target,
+      disabled,
+      verifyPluginSourceFallback,
+      requestScope
+    ),
 
-  patchFields: (target: AuthFileStatusTarget, fields: AuthFileFieldsPatch) => {
+  patchFields: (
+    target: AuthFileStatusTarget,
+    fields: AuthFileFieldsPatch,
+    requestScope?: AuthFilesApiRequestScope
+  ) => {
     const selector = String(target.runtimeId ?? '').trim() || target.name.trim();
+    const identityHeaders = buildAuthFileIdentityHeaders(AUTH_FILE_MUTATION_IDENTITY_HEADER, [
+      target,
+    ]);
+    const scopedRequestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : null;
     return apiClient.patch(
       '/auth-files/fields',
       { name: selector, ...fields },
-      {
-        headers: buildAuthFileIdentityHeaders(AUTH_FILE_MUTATION_IDENTITY_HEADER, [target]),
-      }
+      scopedRequestConfig
+        ? {
+            ...scopedRequestConfig,
+            headers: { ...scopedRequestConfig.headers, ...identityHeaders },
+          }
+        : { headers: identityHeaders }
     );
   },
 
   patchFieldsWithPluginSourceFallback: async (
     target: AuthFileStatusTarget,
     fields: AuthFileFieldsPatch,
-    sourceIdentities: AuthFileStatusTarget[] = []
+    sourceIdentities: AuthFileStatusTarget[] = [],
+    requestScope?: AuthFilesApiRequestScope
   ) => {
     try {
-      return await authFilesApi.patchFields(target, fields);
+      return await authFilesApi.patchFields(target, fields, requestScope);
     } catch (err: unknown) {
       const physicalName = target.name.trim();
       const runtimeId = String(target.runtimeId ?? '').trim();
@@ -995,14 +1228,16 @@ export const authFilesApi = {
         physicalName,
         [target],
         sourceIdentities,
-        fields
+        fields,
+        requestScope
       );
     }
   },
 
   requestCredentialRefresh: (
     target: AuthFileStatusTarget,
-    sourceIdentities: AuthFileStatusTarget[] = []
+    sourceIdentities: AuthFileStatusTarget[] = [],
+    requestScope?: AuthFilesApiRequestScope
   ) =>
     authFilesApi.patchFieldsWithPluginSourceFallback(
       target,
@@ -1010,14 +1245,16 @@ export const authFilesApi = {
         expired: AUTH_FILE_FORCE_REFRESH_TIMESTAMP,
         last_refresh: AUTH_FILE_FORCE_REFRESH_TIMESTAMP,
       },
-      sourceIdentities
+      sourceIdentities,
+      requestScope
     ),
 
   patchFieldsForAuthIndexes: async (
     name: string,
     targets: AuthFileStatusTarget[],
     sourceIdentities: AuthFileStatusTarget[],
-    fields: AuthFileFieldsPatch
+    fields: AuthFileFieldsPatch,
+    requestScope?: AuthFilesApiRequestScope
   ) => {
     const authIndexes = targets
       .map((target) => target.authIndex)
@@ -1025,7 +1262,7 @@ export const authFilesApi = {
         (authIndex): authIndex is AuthFilePatchAuthIndex =>
           authIndex !== undefined && authIndex !== null && String(authIndex).trim() !== ''
       );
-    const rawText = await authFilesApi.downloadText(name);
+    const rawText = await authFilesApi.downloadText(name, requestScope);
     const value = parseAuthFileJsonValue(rawText);
     if (!Array.isArray(value) && sourceIdentities.length !== 1) {
       throw new Error('Auth file patch target changed');
@@ -1035,26 +1272,34 @@ export const authFilesApi = {
     }
     verifyAuthFileJsonPatchTargets(value, targets);
     const nextValue = patchAuthFileJsonValueByAuthIndexes(value, authIndexes, fields);
-    await saveAuthFileText(name, JSON.stringify(nextValue), {
-      ...buildAuthFileIdentityHeaders(AUTH_FILE_WRITE_IDENTITIES_HEADER, sourceIdentities),
-      [AUTH_FILE_WRITE_CONTENT_SHA256_HEADER]: sha256RawTextHex(rawText),
-    });
+    await saveAuthFileText(
+      name,
+      JSON.stringify(nextValue),
+      {
+        ...buildAuthFileIdentityHeaders(AUTH_FILE_WRITE_IDENTITIES_HEADER, sourceIdentities),
+        [AUTH_FILE_WRITE_CONTENT_SHA256_HEADER]: sha256RawTextHex(rawText),
+      },
+      requestScope
+    );
   },
 
-  uploadFiles: async (files: File[]): Promise<AuthFileBatchUploadResult> => {
+  uploadFiles: async (
+    files: File[],
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<AuthFileBatchUploadResult> => {
     const requestedNames = files.map((file) => file.name);
     if (requestedNames.length === 0) {
       return { status: 'ok', uploaded: 0, files: [], failed: [] };
     }
 
     if (files.length === 1) {
-      return uploadSingleAuthFile(files[0]);
+      return uploadSingleAuthFile(files[0], {}, requestScope);
     }
 
     const results: AuthFileBatchUploadResult[] = [];
     for (const file of files) {
       try {
-        results.push(await uploadSingleAuthFile(file));
+        results.push(await uploadSingleAuthFile(file, {}, requestScope));
       } catch (err) {
         results.push({
           status: 'error',
@@ -1067,7 +1312,8 @@ export const authFilesApi = {
     return mergeBatchUploadResults(results, requestedNames);
   },
 
-  upload: (file: File) => authFilesApi.uploadFiles([file]),
+  upload: (file: File, requestScope?: AuthFilesApiRequestScope) =>
+    authFilesApi.uploadFiles([file], requestScope),
 
   deleteFiles: async (names: string[]): Promise<AuthFileBatchDeleteResult> => {
     const requestedNames = normalizeRequestedAuthFileNames(names);
@@ -1087,7 +1333,8 @@ export const authFilesApi = {
     selector: string,
     physicalName = selector,
     verifyPluginSourceFallback?: AuthFilePluginSourceFallbackVerifier,
-    identityTargets: AuthFileDeleteIdentityTarget[] = []
+    identityTargets: AuthFileDeleteIdentityTarget[] = [],
+    requestScope?: AuthFilesApiRequestScope
   ): Promise<AuthFileBatchDeleteResult> => {
     const requestedSelectors = normalizeRequestedAuthFileNames([selector]);
     if (requestedSelectors.length === 0) {
@@ -1101,7 +1348,8 @@ export const authFilesApi = {
       return await deleteAuthFileBySelector(
         normalizedSelector,
         normalizedPhysicalName,
-        identityTargets
+        identityTargets,
+        requestScope
       );
     } catch (err: unknown) {
       if (
@@ -1117,17 +1365,18 @@ export const authFilesApi = {
       return deleteAuthFileBySelector(
         normalizedPhysicalName,
         normalizedPhysicalName,
-        identityTargets
+        identityTargets,
+        requestScope
       );
     }
   },
 
-  deleteAll: () => apiClient.delete('/auth-files', { params: { all: true } }),
-
-  downloadText: async (name: string): Promise<string> => {
+  downloadText: async (name: string, requestScope?: AuthFilesApiRequestScope): Promise<string> => {
+    const scopedRequestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : {};
     const response = await apiClient.getRaw(
       `/auth-files/download?name=${encodeURIComponent(name)}`,
       {
+        ...scopedRequestConfig,
         responseType: 'blob',
       }
     );
@@ -1135,98 +1384,167 @@ export const authFilesApi = {
     return blob.text();
   },
 
-  async downloadJsonObject(name: string): Promise<Record<string, unknown>> {
-    const rawText = await authFilesApi.downloadText(name);
+  async downloadJsonObject(
+    name: string,
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<Record<string, unknown>> {
+    const rawText = await authFilesApi.downloadText(name, requestScope);
     return parseAuthFileJsonObject(rawText);
   },
 
-  saveText: (name: string, text: string) => saveAuthFileText(name, text),
+  saveText: (name: string, text: string, requestScope?: AuthFilesApiRequestScope) =>
+    saveAuthFileText(name, text, {}, requestScope),
 
-  saveJsonObject: (name: string, json: AuthFileJsonValue) =>
-    saveAuthFileText(name, JSON.stringify(json)),
+  saveJsonObject: (
+    name: string,
+    json: AuthFileJsonValue,
+    requestScope?: AuthFilesApiRequestScope
+  ) => saveAuthFileText(name, JSON.stringify(json), {}, requestScope),
 
   // OAuth 排除模型
-  async getOauthExcludedModels(): Promise<Record<string, string[]>> {
-    const data = await apiClient.get('/oauth-excluded-models');
+  async getOauthExcludedModels(
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<Record<string, string[]>> {
+    const data = requestScope
+      ? await apiClient.get('/oauth-excluded-models', createScopedApiRequestConfig(requestScope))
+      : await apiClient.get('/oauth-excluded-models');
     return normalizeOauthExcludedModels(data);
   },
 
-  saveOauthExcludedModels: (provider: string, models: string[]) =>
-    apiClient.patch('/oauth-excluded-models', { provider, models }),
+  saveOauthExcludedModels: (
+    provider: string,
+    models: string[],
+    requestScope?: AuthFilesApiRequestScope
+  ) =>
+    requestScope
+      ? apiClient.patch(
+          '/oauth-excluded-models',
+          { provider, models },
+          createScopedApiRequestConfig(requestScope)
+        )
+      : apiClient.patch('/oauth-excluded-models', { provider, models }),
 
-  deleteOauthExcludedEntry: (provider: string) =>
-    apiClient.delete(`/oauth-excluded-models?provider=${encodeURIComponent(provider)}`),
+  deleteOauthExcludedEntry: (provider: string, requestScope?: AuthFilesApiRequestScope) =>
+    requestScope
+      ? apiClient.delete(
+          `/oauth-excluded-models?provider=${encodeURIComponent(provider)}`,
+          createScopedApiRequestConfig(requestScope)
+        )
+      : apiClient.delete(`/oauth-excluded-models?provider=${encodeURIComponent(provider)}`),
 
-  replaceOauthExcludedModels: (map: Record<string, string[]>) =>
-    apiClient.put('/oauth-excluded-models', normalizeOauthExcludedModels(map)),
+  replaceOauthExcludedModels: (
+    map: Record<string, string[]>,
+    requestScope?: AuthFilesApiRequestScope
+  ) =>
+    requestScope
+      ? apiClient.put(
+          '/oauth-excluded-models',
+          normalizeOauthExcludedModels(map),
+          createScopedApiRequestConfig(requestScope)
+        )
+      : apiClient.put('/oauth-excluded-models', normalizeOauthExcludedModels(map)),
 
   // OAuth 模型别名
-  async getOauthModelAlias(): Promise<Record<string, OAuthModelAliasEntry[]>> {
-    const data = await apiClient.get(OAUTH_MODEL_ALIAS_ENDPOINT);
+  async getOauthModelAlias(
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<Record<string, OAuthModelAliasEntry[]>> {
+    const data = requestScope
+      ? await apiClient.get(OAUTH_MODEL_ALIAS_ENDPOINT, createScopedApiRequestConfig(requestScope))
+      : await apiClient.get(OAUTH_MODEL_ALIAS_ENDPOINT);
     return normalizeOauthModelAlias(data);
   },
 
-  saveOauthModelAlias: async (channel: string, aliases: OAuthModelAliasEntry[]) => {
+  saveOauthModelAlias: async (
+    channel: string,
+    aliases: OAuthModelAliasEntry[],
+    requestScope?: AuthFilesApiRequestScope
+  ) => {
     const normalizedChannel = String(channel ?? '')
       .trim()
       .toLowerCase();
     const normalizedAliases =
       normalizeOauthModelAlias({ [normalizedChannel]: aliases })[normalizedChannel] ?? [];
-    await apiClient.patch(OAUTH_MODEL_ALIAS_ENDPOINT, {
+    const payload = {
       channel: normalizedChannel,
-      aliases: normalizedAliases.map(({ forceMapping, ...entry }) => ({
+      aliases: normalizedAliases.map(({ displayName, forceMapping, ...entry }) => ({
         ...entry,
+        ...(displayName ? { 'display-name': displayName } : {}),
         ...(forceMapping ? { 'force-mapping': true } : {}),
       })),
-    });
+    };
+    if (requestScope) {
+      await apiClient.patch(
+        OAUTH_MODEL_ALIAS_ENDPOINT,
+        payload,
+        createScopedApiRequestConfig(requestScope)
+      );
+      return;
+    }
+    await apiClient.patch(OAUTH_MODEL_ALIAS_ENDPOINT, payload);
   },
 
-  deleteOauthModelAlias: async (channel: string) => {
+  deleteOauthModelAlias: async (channel: string, requestScope?: AuthFilesApiRequestScope) => {
     const normalizedChannel = String(channel ?? '')
       .trim()
       .toLowerCase();
+    const requestConfig = requestScope ? createScopedApiRequestConfig(requestScope) : undefined;
+    const payload = {
+      channel: normalizedChannel,
+      aliases: [],
+    };
 
     try {
-      await apiClient.patch(OAUTH_MODEL_ALIAS_ENDPOINT, {
-        channel: normalizedChannel,
-        aliases: [],
-      });
+      if (requestConfig) {
+        await apiClient.patch(OAUTH_MODEL_ALIAS_ENDPOINT, payload, requestConfig);
+      } else {
+        await apiClient.patch(OAUTH_MODEL_ALIAS_ENDPOINT, payload);
+      }
     } catch (err: unknown) {
       const status = getStatusCode(err);
       if (status !== 405) throw err;
-      await apiClient.delete(
-        `${OAUTH_MODEL_ALIAS_ENDPOINT}?channel=${encodeURIComponent(normalizedChannel)}`
-      );
+      const endpoint = `${OAUTH_MODEL_ALIAS_ENDPOINT}?channel=${encodeURIComponent(normalizedChannel)}`;
+      if (requestConfig) {
+        await apiClient.delete(endpoint, requestConfig);
+      } else {
+        await apiClient.delete(endpoint);
+      }
     }
   },
 
   // 获取认证凭证支持的模型
   async getModelsForAuthFile(
-    name: string
-  ): Promise<{ id: string; display_name?: string; type?: string; owned_by?: string }[]> {
-    const data = await apiClient.get<Record<string, unknown>>(
-      `/auth-files/models?name=${encodeURIComponent(name)}`
-    );
+    name: string,
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<AuthFileModelApiItem[]> {
+    const endpoint = `/auth-files/models?name=${encodeURIComponent(name)}`;
+    const data = requestScope
+      ? await apiClient.get<Record<string, unknown>>(
+          endpoint,
+          createScopedApiRequestConfig(requestScope)
+        )
+      : await apiClient.get<Record<string, unknown>>(endpoint);
     const models = data.models ?? data['models'];
-    return Array.isArray(models)
-      ? (models as { id: string; display_name?: string; type?: string; owned_by?: string }[])
-      : [];
+    return normalizeAuthFileModelItems(models);
   },
 
   // 获取指定 channel 的模型定义
   async getModelDefinitions(
-    channel: string
-  ): Promise<{ id: string; display_name?: string; type?: string; owned_by?: string }[]> {
+    channel: string,
+    requestScope?: AuthFilesApiRequestScope
+  ): Promise<AuthFileModelApiItem[]> {
     const normalizedChannel = String(channel ?? '')
       .trim()
       .toLowerCase();
     if (!normalizedChannel) return [];
-    const data = await apiClient.get<Record<string, unknown>>(
-      `/model-definitions/${encodeURIComponent(normalizedChannel)}`
-    );
+    const endpointChannel = normalizedChannel === 'gemini-cli' ? 'gemini' : normalizedChannel;
+    const endpoint = `/model-definitions/${encodeURIComponent(endpointChannel)}`;
+    const data = requestScope
+      ? await apiClient.get<Record<string, unknown>>(
+          endpoint,
+          createScopedApiRequestConfig(requestScope)
+        )
+      : await apiClient.get<Record<string, unknown>>(endpoint);
     const models = data.models ?? data['models'];
-    return Array.isArray(models)
-      ? (models as { id: string; display_name?: string; type?: string; owned_by?: string }[])
-      : [];
+    return normalizeAuthFileModelItems(models);
   },
 };

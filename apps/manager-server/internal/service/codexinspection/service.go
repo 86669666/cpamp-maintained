@@ -22,12 +22,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/codexquota"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/model"
 	codexinspectionrepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/codexinspection"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpa"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpaauthfiles"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/credentialpolicy"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
+	quotasnapshotsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
@@ -72,6 +74,7 @@ type Service struct {
 	managerConfigService *managerconfig.Service
 	client               *http.Client
 	authFileMutations    *cpaauthfiles.MutationCoordinator
+	quotaSnapshots       quotaSnapshotWriter
 
 	mu                             sync.Mutex
 	cancelMu                       sync.Mutex
@@ -91,6 +94,10 @@ type Service struct {
 	manualActionPersistenceTimeout time.Duration
 	logMu                          sync.Mutex
 	logGate                        chan struct{}
+}
+
+type quotaSnapshotWriter interface {
+	WriteCodexInspectionResult(context.Context, model.CodexInspectionResult) error
 }
 
 type ServiceOptions struct {
@@ -218,7 +225,7 @@ const (
 
 const (
 	fileActionDuplicateReason       = "该认证目标已由另一条结果处理"
-	fileActionMixedReason           = "同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到认证文件管理中手动处理"
+	fileActionMixedReason           = "同一认证文件下存在多个不同建议动作，文件级处理已阻止，请到凭证管理中手动处理"
 	fileDeleteCoverageReason        = "实时认证文件包含未被删除建议完整覆盖的凭证，文件级删除已阻止，请人工确认"
 	inspectionIdentityMissingReason = "巡检结果缺少稳定账号标识，已阻止处理，请人工确认"
 	statusMutationScopeReason       = "当前凭证缺少可安全独立修改的运行时标识，或该标识代表共享源文件，已阻止状态修改，请人工确认"
@@ -248,6 +255,19 @@ type codexClassifiedWindows struct {
 type codexWindowMeta struct {
 	ID       string
 	LabelKey string
+}
+
+type codexAdditionalRateLimitFamily struct {
+	sourceIndex        int
+	rateInfo           *codexRateLimit
+	limitName          string
+	modelScope         codexquota.ModelScope
+	baseIDPrefix       string
+	featureIDPrefix    string
+	legacyBaseIDPrefix string
+	legacyPrefixes     []string
+	idPrefix           string
+	sortKey            string
 }
 
 func (w codexClassifiedWindows) longWindow() *codexWindow {
@@ -315,6 +335,7 @@ func NewWithOptions(st *store.Store, managerConfigService *managerconfig.Service
 		managerConfigService:           managerConfigService,
 		client:                         client,
 		authFileMutations:              authFileMutations,
+		quotaSnapshots:                 quotasnapshotsvc.New(st),
 		ownerID:                        ownerID,
 		leaseDuration:                  leaseDuration,
 		heartbeatInterval:              heartbeatInterval,
@@ -1800,6 +1821,12 @@ func (s *Service) inspectSingleAccount(
 	}
 	base.PlanType = planType
 	base.QuotaWindows = buildCodexInspectionQuotaWindows(payload, planType)
+	base.QuotaInventoryObserved = codexQuotaInventoryObserved(payload)
+	if base.QuotaInventoryObserved && len(base.QuotaWindows) == 0 {
+		// Preserve the distinction between an explicitly observed empty inventory
+		// and a successful response whose quota schema could not be recognized.
+		base.QuotaWindowsJSON = "[]"
+	}
 	base.Error = ""
 	if statusCode < 200 || statusCode >= 300 {
 		base.ErrorKind = "http_status"
@@ -3287,7 +3314,7 @@ func selectManualActionItems(
 			outcomes = append(outcomes, skippedActionOutcome(result, result.Action, "该建议动作已跳过"))
 			continue
 		case model.CodexInspectionActionStatusNeedsReview:
-			outcomes = append(outcomes, needsReviewActionOutcome(result, result.Action, "该建议动作需要到认证文件管理中人工处理"))
+			outcomes = append(outcomes, needsReviewActionOutcome(result, result.Action, "该建议动作需要到凭证管理中人工处理"))
 			continue
 		}
 		if fileName == "" {
@@ -3962,7 +3989,7 @@ func (s *Service) persistInspectionResults(
 		}
 		result.RunID = runID
 		writeCtx, cancel := context.WithTimeout(persistCtx, resultWriteTimeout)
-		_, err := s.store.InsertCodexInspectionResult(writeCtx, result)
+		stored, err := s.store.InsertCodexInspectionResult(writeCtx, result)
 		cancel()
 		if err != nil {
 			failures++
@@ -3971,6 +3998,20 @@ func (s *Service) persistInspectionResults(
 				"displayAccount": result.DisplayAccount,
 				"retryScheduled": true,
 				"error":          err.Error(),
+			})
+			continue
+		}
+		results[index] = stored
+		snapshotCtx, snapshotCancel := context.WithTimeout(persistCtx, resultWriteTimeout)
+		snapshotErr := s.quotaSnapshots.WriteCodexInspectionResult(snapshotCtx, stored)
+		snapshotCancel()
+		if snapshotErr != nil {
+			failures++
+			logger.warning(ctx, "写入巡检额度快照失败", map[string]any{
+				"fileName":       result.FileName,
+				"displayAccount": result.DisplayAccount,
+				"retryScheduled": true,
+				"error":          snapshotErr.Error(),
 			})
 		}
 	}
@@ -4407,9 +4448,11 @@ func buildCodexInspectionQuotaWindows(payload map[string]any, planType string) [
 		codexWindowMeta{ID: "five-hour", LabelKey: "codex_quota.primary_window"},
 		codexWindowMeta{ID: "weekly", LabelKey: "codex_quota.secondary_window"},
 		codexWindowMeta{ID: "monthly", LabelKey: "codex_quota.monthly_window"},
+		"",
 		"codex_quota.generic_window",
 		nil,
 		teamPlan,
+		codexquota.MainScope(),
 	)
 	addCodexRateLimitWindows(
 		&windows,
@@ -4417,12 +4460,40 @@ func buildCodexInspectionQuotaWindows(payload map[string]any, planType string) [
 		codexWindowMeta{ID: "code-review-five-hour", LabelKey: "codex_quota.code_review_primary_window"},
 		codexWindowMeta{ID: "code-review-weekly", LabelKey: "codex_quota.code_review_secondary_window"},
 		codexWindowMeta{ID: "code-review-monthly", LabelKey: "codex_quota.code_review_monthly_window"},
+		"code-review",
 		"codex_quota.code_review_generic_window",
 		nil,
 		teamPlan,
+		codexquota.CodeReviewScope(),
 	)
 	addAdditionalRateLimitWindows(&windows, readMapSlice(payload, "additional_rate_limits", "additionalRateLimits"), teamPlan)
 	return windows
+}
+
+func codexQuotaInventoryObserved(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	for _, key := range []string{"rate_limit", "rateLimit", "code_review_rate_limit", "codeReviewRateLimit"} {
+		raw, exists := payload[key]
+		if !exists {
+			continue
+		}
+		if _, ok := raw.(map[string]any); ok {
+			return true
+		}
+	}
+	for _, key := range []string{"additional_rate_limits", "additionalRateLimits"} {
+		raw, exists := payload[key]
+		if !exists {
+			continue
+		}
+		switch raw.(type) {
+		case []any, []map[string]any:
+			return true
+		}
+	}
+	return false
 }
 
 func addCodexRateLimitWindows(
@@ -4431,24 +4502,26 @@ func addCodexRateLimitWindows(
 	fiveHourMeta codexWindowMeta,
 	weeklyMeta codexWindowMeta,
 	monthlyMeta codexWindowMeta,
+	genericIDPrefix string,
 	genericLabelKey string,
 	genericLabelParams map[string]any,
 	teamPlan bool,
+	modelScope codexquota.ModelScope,
 ) {
 	if limit == nil {
 		return
 	}
 	classified := classifyWindows(limit, codexPlanTypeForTeam(teamPlan))
 	added := make(map[*codexWindow]bool)
-	addCodexWindowInfo(windows, fiveHourMeta.ID, fiveHourMeta.LabelKey, genericLabelParams, classified.FiveHour, limit.LimitReached, limit.Allowed)
+	addCodexWindowInfo(windows, fiveHourMeta.ID, fiveHourMeta.LabelKey, genericLabelParams, classified.FiveHour, limit.LimitReached, limit.Allowed, modelScope)
 	if classified.FiveHour != nil {
 		added[classified.FiveHour] = true
 	}
-	addCodexWindowInfo(windows, weeklyMeta.ID, weeklyMeta.LabelKey, genericLabelParams, classified.Weekly, limit.LimitReached, limit.Allowed)
+	addCodexWindowInfo(windows, weeklyMeta.ID, weeklyMeta.LabelKey, genericLabelParams, classified.Weekly, limit.LimitReached, limit.Allowed, modelScope)
 	if classified.Weekly != nil {
 		added[classified.Weekly] = true
 	}
-	addCodexWindowInfo(windows, monthlyMeta.ID, monthlyMeta.LabelKey, genericLabelParams, classified.Monthly, limit.LimitReached, limit.Allowed)
+	addCodexWindowInfo(windows, monthlyMeta.ID, monthlyMeta.LabelKey, genericLabelParams, classified.Monthly, limit.LimitReached, limit.Allowed, modelScope)
 	if classified.Monthly != nil {
 		added[classified.Monthly] = true
 	}
@@ -4457,11 +4530,9 @@ func addCodexRateLimitWindows(
 			continue
 		}
 		duration := formatCodexWindowDuration(window.LimitWindowSeconds)
-		prefix := ""
-		if name, ok := genericLabelParams["name"]; ok {
-			if normalizedName := normalizeCodexWindowID(fmt.Sprint(name)); normalizedName != "" {
-				prefix = normalizedName + "-"
-			}
+		prefix := normalizeCodexWindowID(genericIDPrefix)
+		if prefix != "" {
+			prefix += "-"
 		}
 		addCodexWindowInfo(
 			windows,
@@ -4471,6 +4542,7 @@ func addCodexRateLimitWindows(
 			window,
 			limit.LimitReached,
 			limit.Allowed,
+			modelScope,
 		)
 	}
 }
@@ -4497,11 +4569,14 @@ func addCodexWindowInfo(
 	window *codexWindow,
 	limitReached bool,
 	allowed *bool,
+	modelScope codexquota.ModelScope,
 ) {
 	if window == nil {
 		return
 	}
-	resetLabel := formatCodexResetLabel(window)
+	observedAt := time.Now()
+	resetAtMS, resetAccuracy := resolveCodexInspectionReset(window, observedAt)
+	resetLabel := formatCodexResetLabelAt(window, observedAt)
 	usedPercent := window.UsedPercent
 	if usedPercent == nil && (limitReached || (allowed != nil && !*allowed)) && resetLabel != "-" {
 		usedPercent = ptrFloat(100)
@@ -4512,36 +4587,201 @@ func addCodexWindowInfo(
 		LabelParams:        copyCodexLabelParams(labelParams),
 		UsedPercent:        usedPercent,
 		ResetLabel:         resetLabel,
+		ResetAtMS:          resetAtMS,
+		ResetAccuracy:      resetAccuracy,
 		LimitWindowSeconds: window.LimitWindowSeconds,
+		ModelScope:         codexInspectionQuotaModelScope(modelScope),
 	})
 }
 
+func codexInspectionQuotaModelScope(scope codexquota.ModelScope) *model.CodexInspectionQuotaModelScope {
+	return &model.CodexInspectionQuotaModelScope{
+		Kind:     scope.Kind,
+		Key:      scope.Key,
+		Models:   append([]string(nil), scope.Models...),
+		Complete: scope.Complete,
+	}
+}
+
 func addAdditionalRateLimitWindows(windows *[]model.CodexInspectionQuotaWindow, additionalRateLimits []map[string]any, teamPlan bool) {
+	families := make([]codexAdditionalRateLimitFamily, 0, len(additionalRateLimits))
+	baseIDPrefixCounts := make(map[string]int)
+	legacyBaseIDPrefixCounts := make(map[string]int)
 	for index, limitItem := range additionalRateLimits {
 		rateInfo := parseRateLimit(readMap(limitItem, "rate_limit", "rateLimit"))
 		if rateInfo == nil {
 			continue
 		}
+		meteredFeature := readString(limitItem, "metered_feature", "meteredFeature")
 		limitName := firstNonEmpty(
 			readString(limitItem, "limit_name", "limitName"),
-			readString(limitItem, "metered_feature", "meteredFeature"),
+			meteredFeature,
 			fmt.Sprintf("additional-%d", index+1),
 		)
-		idPrefix := normalizeCodexWindowID(limitName)
-		if idPrefix == "" {
-			idPrefix = fmt.Sprintf("additional-%d", index+1)
+		scopeResolution := codexquota.ResolveAdditionalScope(codexquota.AdditionalScopeInput{
+			MeteredFeature:    meteredFeature,
+			LimitName:         readString(limitItem, "limit_name", "limitName"),
+			AnonymousIdentity: anonymousCodexAdditionalIdentity(rateInfo),
+		})
+		legacyBaseIDPrefix := normalizeCodexWindowID(limitName)
+		if legacyBaseIDPrefix == "" {
+			legacyBaseIDPrefix = fmt.Sprintf("additional-%d", index+1)
 		}
+		families = append(families, codexAdditionalRateLimitFamily{
+			sourceIndex:        index,
+			rateInfo:           rateInfo,
+			limitName:          limitName,
+			modelScope:         scopeResolution.Scope,
+			baseIDPrefix:       scopeResolution.ProviderWindowPrefix,
+			featureIDPrefix:    normalizeCodexWindowID(meteredFeature),
+			legacyBaseIDPrefix: legacyBaseIDPrefix,
+			legacyPrefixes:     append([]string(nil), scopeResolution.LegacyPrefixes...),
+			sortKey:            codexAdditionalRateLimitSortKey(rateInfo),
+		})
+		baseIDPrefixCounts[scopeResolution.ProviderWindowPrefix]++
+		legacyBaseIDPrefixCounts[legacyBaseIDPrefix]++
+	}
+
+	familiesByIDPrefix := make(map[string][]int)
+	for index := range families {
+		family := &families[index]
+		family.idPrefix = family.baseIDPrefix
+		if baseIDPrefixCounts[family.baseIDPrefix] > 1 && family.featureIDPrefix != "" && family.featureIDPrefix != family.baseIDPrefix {
+			family.idPrefix += "--" + family.featureIDPrefix
+		}
+		legacyPrefix := family.legacyBaseIDPrefix
+		if legacyBaseIDPrefixCounts[legacyPrefix] > 1 && family.featureIDPrefix != "" && family.featureIDPrefix != legacyPrefix {
+			legacyPrefix += "--" + family.featureIDPrefix
+		}
+		family.legacyPrefixes = append(family.legacyPrefixes, legacyPrefix)
+		familiesByIDPrefix[family.idPrefix] = append(familiesByIDPrefix[family.idPrefix], index)
+	}
+	familyIndexes := make(map[int]int, len(families))
+	for _, indexes := range familiesByIDPrefix {
+		sort.SliceStable(indexes, func(left, right int) bool {
+			leftFamily := families[indexes[left]]
+			rightFamily := families[indexes[right]]
+			if leftFamily.sortKey != rightFamily.sortKey {
+				return leftFamily.sortKey < rightFamily.sortKey
+			}
+			return leftFamily.sourceIndex < rightFamily.sourceIndex
+		})
+		for familyIndex, index := range indexes {
+			familyIndexes[index] = familyIndex
+		}
+	}
+
+	for index, family := range families {
+		familyIndex := familyIndexes[index]
+		start := len(*windows)
 		addCodexRateLimitWindows(
 			windows,
-			rateInfo,
-			codexWindowMeta{ID: fmt.Sprintf("%s-five-hour-%d", idPrefix, index), LabelKey: "codex_quota.additional_primary_window"},
-			codexWindowMeta{ID: fmt.Sprintf("%s-weekly-%d", idPrefix, index), LabelKey: "codex_quota.additional_secondary_window"},
-			codexWindowMeta{ID: fmt.Sprintf("%s-monthly-%d", idPrefix, index), LabelKey: "codex_quota.additional_monthly_window"},
+			family.rateInfo,
+			codexWindowMeta{ID: fmt.Sprintf("%s-five-hour-%d", family.idPrefix, familyIndex), LabelKey: "codex_quota.additional_primary_window"},
+			codexWindowMeta{ID: fmt.Sprintf("%s-weekly-%d", family.idPrefix, familyIndex), LabelKey: "codex_quota.additional_secondary_window"},
+			codexWindowMeta{ID: fmt.Sprintf("%s-monthly-%d", family.idPrefix, familyIndex), LabelKey: "codex_quota.additional_monthly_window"},
+			fmt.Sprintf("%s-%d", family.idPrefix, familyIndex),
 			"codex_quota.additional_generic_window",
-			map[string]any{"name": limitName},
+			map[string]any{"name": family.limitName},
 			teamPlan,
+			family.modelScope,
 		)
+		applyCodexProviderWindowAliases((*windows)[start:], family.idPrefix, family.legacyPrefixes)
 	}
+}
+
+func applyCodexProviderWindowAliases(
+	windows []model.CodexInspectionQuotaWindow,
+	providerWindowPrefix string,
+	legacyPrefixes []string,
+) {
+	aliases := make([]string, 0, len(legacyPrefixes))
+	seen := make(map[string]struct{}, len(legacyPrefixes))
+	for _, prefix := range legacyPrefixes {
+		prefix = strings.ToLower(strings.TrimSpace(prefix))
+		if prefix == "" || prefix == providerWindowPrefix {
+			continue
+		}
+		if _, exists := seen[prefix]; exists {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		aliases = append(aliases, prefix)
+	}
+	sort.Strings(aliases)
+	for index := range windows {
+		if !strings.HasPrefix(windows[index].ID, providerWindowPrefix) {
+			continue
+		}
+		suffix := strings.TrimPrefix(windows[index].ID, providerWindowPrefix)
+		windows[index].ProviderWindowAliases = make([]string, 0, len(aliases))
+		for _, prefix := range aliases {
+			windows[index].ProviderWindowAliases = append(
+				windows[index].ProviderWindowAliases,
+				prefix+suffix,
+			)
+		}
+	}
+}
+
+func anonymousCodexAdditionalIdentity(rateInfo *codexRateLimit) string {
+	if rateInfo == nil {
+		return "additional-p-none-s-none"
+	}
+	return strings.Join([]string{
+		"additional",
+		"p",
+		codexAdditionalWindowIdentityPart(rateInfo.PrimaryWindow),
+		"s",
+		codexAdditionalWindowIdentityPart(rateInfo.SecondaryWindow),
+	}, "-")
+}
+
+func codexAdditionalWindowIdentityPart(window *codexWindow) string {
+	if window == nil {
+		return "none"
+	}
+	if window.LimitWindowSeconds == nil {
+		return "unknown"
+	}
+	return fmt.Sprintf("%g", *window.LimitWindowSeconds)
+}
+
+func codexAdditionalRateLimitSortKey(rateInfo *codexRateLimit) string {
+	if rateInfo == nil {
+		return ""
+	}
+	allowed := ""
+	if rateInfo.Allowed != nil {
+		allowed = fmt.Sprintf("%t", *rateInfo.Allowed)
+	}
+	return strings.Join([]string{
+		codexAdditionalWindowSortKey(rateInfo.PrimaryWindow),
+		codexAdditionalWindowSortKey(rateInfo.SecondaryWindow),
+		allowed,
+		fmt.Sprintf("%t", rateInfo.LimitReached),
+	}, "|")
+}
+
+func codexAdditionalWindowSortKey(window *codexWindow) string {
+	if window == nil {
+		return "none"
+	}
+	values := []*float64{
+		window.LimitWindowSeconds,
+		window.UsedPercent,
+		window.ResetAfterSeconds,
+		window.ResetAt,
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == nil {
+			parts = append(parts, "")
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%g", *value))
+	}
+	return strings.Join(parts, ":")
 }
 
 func readMapSlice(record map[string]any, keys ...string) []map[string]any {
@@ -4565,6 +4805,10 @@ func readMapSlice(record map[string]any, keys ...string) []map[string]any {
 }
 
 func formatCodexResetLabel(window *codexWindow) string {
+	return formatCodexResetLabelAt(window, time.Now())
+}
+
+func formatCodexResetLabelAt(window *codexWindow, observedAt time.Time) string {
 	if window == nil {
 		return "-"
 	}
@@ -4572,10 +4816,23 @@ func formatCodexResetLabel(window *codexWindow) string {
 		return formatUnixSeconds(*window.ResetAt)
 	}
 	if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
-		targetSeconds := float64(time.Now().Unix()) + math.Floor(*window.ResetAfterSeconds)
+		targetSeconds := float64(observedAt.Unix()) + math.Floor(*window.ResetAfterSeconds)
 		return formatUnixSeconds(targetSeconds)
 	}
 	return "-"
+}
+
+func resolveCodexInspectionReset(window *codexWindow, observedAt time.Time) (int64, string) {
+	if window == nil {
+		return 0, "unknown"
+	}
+	if window.ResetAt != nil && *window.ResetAt > 0 {
+		return int64(math.Floor(*window.ResetAt)) * 1000, "exact"
+	}
+	if window.ResetAfterSeconds != nil && *window.ResetAfterSeconds > 0 {
+		return observedAt.Add(time.Duration(*window.ResetAfterSeconds * float64(time.Second))).UnixMilli(), "derived"
+	}
+	return 0, "unknown"
 }
 
 func formatUnixSeconds(seconds float64) string {

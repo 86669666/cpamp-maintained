@@ -1,5 +1,10 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="logo-white.svg">
+  <img src="logo.svg" alt="CPAMP" width="480">
+</picture>
+
 # CPA Manager Plus
 
 [![Release](https://img.shields.io/github/v/release/seakee/CPA-Manager-Plus?style=flat-square)](https://github.com/seakee/CPA-Manager-Plus/releases/latest)
@@ -17,7 +22,7 @@ Operate providers, credentials, OAuth, plugins, and configuration while keeping 
 
 ## Maintained Lightweight Variant
 
-This maintained lightweight variant stays based on upstream CPA Manager Plus `v1.11.12` (`68b57da8c206c023120a3e7597e5d729eac2760f`). Plugin UI capability follows the server-provided `X-CPA-Support-Plugin` header; when unsupported, plugin management and plugin-related visual configuration controls remain hidden. The bundled CPA ↔ sub2api tool processes files and pasted JSON only inside the current browser tab, without network requests or persistence. Upstream CPA Manager Plus remains attributed and distributed under its MIT License, and the adapted CPA2sub2API tool retains its own bundled MIT notice.
+This maintained lightweight variant stays based on upstream CPA Manager Plus `v1.12.4` (`931d771344fdd5d95db5ae0adb87259eca133adc`). Plugin UI capability follows the server-provided `X-CPA-Support-Plugin` header; when unsupported, plugin management and plugin-related visual configuration controls remain hidden. The bundled CPA ↔ sub2api tool processes files and pasted JSON only inside the current browser tab, without network requests or persistence. Upstream CPA Manager Plus remains attributed and distributed under its MIT License, and the adapted CPA2sub2API tool retains its own bundled MIT notice.
 
 ## What Can CPAMP Help You Answer?
 
@@ -31,7 +36,7 @@ This maintained lightweight variant stays based on upstream CPA Manager Plus `v1
   <tr>
     <td align="center">
       <strong>Dashboard</strong><br>
-      <img src="img/home.png" alt="CPA CLIProxyAPI management and observability dashboard" width="420">
+      <img src="img/dashboard.png" alt="CPA CLIProxyAPI management and observability dashboard" width="420">
     </td>
     <td align="center">
       <strong>Request Monitoring</strong><br>
@@ -44,8 +49,18 @@ This maintained lightweight variant stays based on upstream CPA Manager Plus `v1
       <img src="img/usage-analytics.png" alt="CPA usage and cost analytics by model and account" width="420">
     </td>
     <td align="center">
-      <strong>Account Health</strong><br>
-      <img src="img/codex-inspection.png" alt="Codex and xAI account inspection and quota health" width="420">
+      <strong>Credential Management</strong><br>
+      <img src="img/credential.png" alt="CPA credential management list with availability, usage, quota, and actions" width="420">
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <strong>Credential Health Inspection</strong><br>
+      <img src="img/credential-health.png" alt="CPA credential health inspection status, history, and results" width="420">
+    </td>
+    <td align="center">
+      <strong>Credential Quota</strong><br>
+      <img src="img/credential-quota.png" alt="CPA credential quota usage, current window, and forecast" width="420">
     </td>
   </tr>
 </table>
@@ -89,7 +104,7 @@ See [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/gui
 - Inspect Codex and xAI accounts locally or on a Manager Server schedule.
 - Read quota windows, reset evidence, credential state, workspace state, and provider-specific health signals when available.
 - Apply controlled quota cooldowns and route credential failures into an account action queue for review and recovery.
-- Open the [Account Inspection Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/codex-inspection) and [Auth Files Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/auth-files).
+- Open the unified [Accounts Demo](https://seakee.github.io/CPA-Manager-Plus/#/demo/accounts).
 
 ### Production Operations
 
@@ -168,18 +183,18 @@ Recommended CPA version: `v7.1.39+`. The HTTP usage queue needs `v6.10.8+`.
 
 ## Documentation
 
-| Task                                                      | Guide                                                                                                                                                                                                |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Choose the right panel and deployment mode                | [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/choosing-a-panel.html)                                                                                                |
-| Replace the official UI without deploying another service | [CPAMP Lightweight Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/deployment/cpa-panel.html)                                                                                               |
-| Install and complete first setup                          | [Getting Started](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/getting-started.html)                                                                                                      |
-| Understand supported features and modes                   | [Capability Matrix](https://seakee.github.io/CPA-Manager-Plus/docs/en/reference/capability-matrix.html)                                                                                              |
-| Understand runtime ports, keys, and request flow          | [Runtime Model](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/runtime-model.html)                                                                                                          |
-| Configure providers, credentials, quota, and plugins      | [Panel Manual](https://seakee.github.io/CPA-Manager-Plus/docs/en/manual/ai-providers.html)                                                                                                           |
-| Operate Manager Server, backups, upgrades, and migrations | [Manager Server Guide](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/manager-server.html)                                                                                             |
-| Back up data or recover a lost admin key                  | [Backup And Restore](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/backup.html), [Reset Admin Key](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/reset-admin-key.html) |
-| Migrate from the legacy CPA-Manager                       | [Migration From CPA-Manager](https://seakee.github.io/CPA-Manager-Plus/docs/en/migration/from-cpa-manager.html)                                                                                      |
-| Diagnose empty monitoring or queue problems               | [Troubleshooting](https://seakee.github.io/CPA-Manager-Plus/docs/en/troubleshooting/request-monitoring.html)                                                                                         |
+| Task                                                      | Guide                                                                                                                                                                                                                                                                      |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Choose the right panel and deployment mode                | [Choosing A CPA Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/choosing-a-panel.html)                                                                                                                                                                      |
+| Replace the official UI without deploying another service | [CPAMP Lightweight Panel](https://seakee.github.io/CPA-Manager-Plus/docs/en/deployment/cpa-panel.html)                                                                                                                                                                     |
+| Install and complete first setup                          | [Getting Started](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/getting-started.html)                                                                                                                                                                            |
+| Understand supported features and modes                   | [Capability Matrix](https://seakee.github.io/CPA-Manager-Plus/docs/en/reference/capability-matrix.html)                                                                                                                                                                    |
+| Understand runtime ports, keys, and request flow          | [Runtime Model](https://seakee.github.io/CPA-Manager-Plus/docs/en/guide/runtime-model.html)                                                                                                                                                                                |
+| Configure providers, credentials, quota, and plugins      | [AI Providers](https://seakee.github.io/CPA-Manager-Plus/docs/en/manual/ai-providers.html), [Accounts](https://seakee.github.io/CPA-Manager-Plus/docs/en/manual/accounts.html), [Plugin Management](https://seakee.github.io/CPA-Manager-Plus/docs/en/manual/plugins.html) |
+| Operate Manager Server, backups, upgrades, and migrations | [Manager Server Guide](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/manager-server.html)                                                                                                                                                                   |
+| Back up data or recover a lost admin key                  | [Backup And Restore](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/backup.html), [Reset Admin Key](https://seakee.github.io/CPA-Manager-Plus/docs/en/operations/reset-admin-key.html)                                                                       |
+| Migrate from the legacy CPA-Manager                       | [Migration From CPA-Manager](https://seakee.github.io/CPA-Manager-Plus/docs/en/migration/from-cpa-manager.html)                                                                                                                                                            |
+| Diagnose empty monitoring or queue problems               | [Troubleshooting](https://seakee.github.io/CPA-Manager-Plus/docs/en/troubleshooting/request-monitoring.html)                                                                                                                                                               |
 
 ## Data, Privacy, And Security
 

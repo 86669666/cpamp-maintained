@@ -6,6 +6,7 @@ import {
   type Location,
   type RouteObject,
 } from 'react-router-dom';
+import { AccountsPage } from '@/pages/AccountsPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { AiProvidersPage } from '@/pages/AiProvidersPage';
 import { AiProvidersClaudeEditLayout } from '@/pages/AiProvidersClaudeEditLayout';
@@ -17,17 +18,11 @@ import { AiProvidersOpenAIEditLayout } from '@/pages/AiProvidersOpenAIEditLayout
 import { AiProvidersOpenAIEditPage } from '@/pages/AiProvidersOpenAIEditPage';
 import { AiProvidersOpenAIModelsPage } from '@/pages/AiProvidersOpenAIModelsPage';
 import { AiProvidersVertexEditPage } from '@/pages/AiProvidersVertexEditPage';
-import { AuthFilesPage } from '@/pages/AuthFilesPage';
-import { AuthFilesOAuthExcludedEditPage } from '@/pages/AuthFilesOAuthExcludedEditPage';
-import { AuthFilesOAuthModelAliasEditPage } from '@/pages/AuthFilesOAuthModelAliasEditPage';
 import { OAuthPage } from '@/pages/OAuthPage';
-import { QuotaPage } from '@/pages/QuotaPage';
 import { UsageAnalyticsPage } from '@/pages/UsageAnalyticsPage';
 import { MonitoringCenterPage } from '@/pages/MonitoringCenterPage';
 import { AccountActionCandidatesPage } from '@/pages/AccountActionCandidatesPage';
 import { ModelPricesPage } from '@/pages/ModelPricesPage';
-import { CodexInspectionPage } from '@/pages/CodexInspectionPage';
-import { ServerCodexInspectionPage } from '@/pages/ServerCodexInspectionPage';
 import { ConfigPage } from '@/pages/ConfigPage';
 import { LogsPage } from '@/pages/LogsPage';
 import { PluginResourcePage } from '@/pages/PluginResourcePage';
@@ -35,14 +30,20 @@ import { PluginsPage } from '@/pages/PluginsPage';
 import { SystemPage } from '@/pages/SystemPage';
 import { CpaSub2apiToolPage } from '@/features/tools/cpaSub2api/CpaSub2apiToolPage';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
-import { CodexInspectionModeTabs } from '@/features/monitoring/components/CodexInspectionModeTabs';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
-import { isLogsRouteAvailable } from '@/features/logs/logFeatureAvailability';
 import { ensureRouteBasePathname, isDemoMode } from '@/features/demo/demoMode';
 import { useAuthStore, useConfigStore } from '@/stores';
-import codexInspectionStyles from '@/features/monitoring/CodexInspectionPage.module.scss';
 
-type FeatureKey = 'requestMonitoring' | 'modelPrices' | 'serverCodexInspection';
+type FeatureKey = 'requestMonitoring' | 'modelPrices';
+
+function LegacyAccountsRedirect({ healthMode }: { healthMode: 'local' | 'server' }) {
+  const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  params.set('view', 'health');
+  params.set('healthMode', healthMode);
+  const search = params.toString();
+  return <Navigate to={{ pathname: '/accounts', search: search ? `?${search}` : '' }} replace />;
+}
 
 function PluginGate({ children }: { children: ReactElement }) {
   const supportsPlugin = useAuthStore((state) => state.supportsPlugin);
@@ -68,9 +69,7 @@ function FeatureGate({
   const enabled =
     feature === 'requestMonitoring'
       ? availability.requestMonitoringAvailable
-      : feature === 'modelPrices'
-        ? availability.modelPricesAvailable
-        : availability.serverCodexInspectionAvailable;
+      : availability.modelPricesAvailable;
 
   if (availability.checking) {
     return fallback ?? <LoadingSpinner />;
@@ -83,51 +82,7 @@ function FeatureGate({
   return children;
 }
 
-function ServerCodexInspectionRouteFallback() {
-  return (
-    <div className={codexInspectionStyles.page} aria-busy="true">
-      <CodexInspectionModeTabs activeMode="server" />
-      <section
-        className={[
-          codexInspectionStyles.panel,
-          codexInspectionStyles.statusPanel,
-          codexInspectionStyles.routeSkeletonPanel,
-        ]
-          .filter(Boolean)
-          .join(' ')}
-      >
-        <div className={codexInspectionStyles.routeSkeletonHeader}>
-          <span
-            className={[
-              codexInspectionStyles.routeSkeletonLine,
-              codexInspectionStyles.routeSkeletonLineTitle,
-            ]
-              .filter(Boolean)
-              .join(' ')}
-          />
-          <span className={codexInspectionStyles.routeSkeletonPill} />
-        </div>
-        <div className={codexInspectionStyles.routeSkeletonMeta}>
-          <span className={codexInspectionStyles.routeSkeletonPill} />
-          <span className={codexInspectionStyles.routeSkeletonPill} />
-          <span className={codexInspectionStyles.routeSkeletonPillWide} />
-        </div>
-        <div className={codexInspectionStyles.routeSkeletonGrid}>
-          {Array.from({ length: 6 }).map((_, index) => (
-            <span key={index} className={codexInspectionStyles.routeSkeletonCard} />
-          ))}
-        </div>
-      </section>
-      <section className={codexInspectionStyles.routeSkeletonDetailGrid}>
-        <span className={codexInspectionStyles.routeSkeletonBlock} />
-        <span className={codexInspectionStyles.routeSkeletonBlockTall} />
-      </section>
-    </div>
-  );
-}
-
 function LogsGate({ children }: { children: ReactElement }) {
-  const location = useLocation();
   const config = useConfigStore((state) => state.config);
   const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const requestedRef = useRef(false);
@@ -141,10 +96,6 @@ function LogsGate({ children }: { children: ReactElement }) {
 
   if (!config && !failed) {
     return <LoadingSpinner />;
-  }
-
-  if (!isLogsRouteAvailable(config, location.search)) {
-    return <Navigate to="/config" replace />;
   }
 
   return children;
@@ -195,11 +146,8 @@ const mainRoutes: RouteObject[] = [
   },
   { path: '/ai-providers', element: <AiProvidersPage /> },
   { path: '/ai-providers/*', element: <AiProvidersPage /> },
-  { path: '/auth-files', element: <AuthFilesPage /> },
-  { path: '/auth-files/oauth-excluded', element: <AuthFilesOAuthExcludedEditPage /> },
-  { path: '/auth-files/oauth-model-alias', element: <AuthFilesOAuthModelAliasEditPage /> },
+  { path: '/accounts', element: <AccountsPage /> },
   { path: '/oauth', element: <OAuthPage /> },
-  { path: '/quota', element: <QuotaPage /> },
   {
     path: '/usage-analytics',
     element: (
@@ -208,17 +156,13 @@ const mainRoutes: RouteObject[] = [
       </FeatureGate>
     ),
   },
-  { path: '/codex-inspection', element: <CodexInspectionPage /> },
+  {
+    path: '/codex-inspection',
+    element: <LegacyAccountsRedirect healthMode="local" />,
+  },
   {
     path: '/codex-inspection/server',
-    element: (
-      <FeatureGate
-        feature="serverCodexInspection"
-        fallback={<ServerCodexInspectionRouteFallback />}
-      >
-        <ServerCodexInspectionPage />
-      </FeatureGate>
-    ),
+    element: <LegacyAccountsRedirect healthMode="server" />,
   },
   {
     path: '/model-prices',
@@ -252,14 +196,13 @@ const mainRoutes: RouteObject[] = [
       </FeatureGate>
     ),
   },
-  { path: '/monitoring/codex-inspection', element: <Navigate to="/codex-inspection" replace /> },
+  {
+    path: '/monitoring/codex-inspection',
+    element: <LegacyAccountsRedirect healthMode="local" />,
+  },
   {
     path: '/monitoring/codex-inspection/server',
-    element: (
-      <FeatureGate feature="serverCodexInspection">
-        <Navigate to="/codex-inspection/server" replace />
-      </FeatureGate>
-    ),
+    element: <LegacyAccountsRedirect healthMode="server" />,
   },
   {
     path: '/plugins',
@@ -317,13 +260,7 @@ const ensureRouteLocationBase = (
   };
 };
 
-export function MainRoutes({
-  location,
-  routeBase,
-}: {
-  location?: Location;
-  routeBase?: string;
-}) {
+export function MainRoutes({ location, routeBase }: { location?: Location; routeBase?: string }) {
   const routeLocation = useMemo(
     () => ensureRouteLocationBase(location, routeBase),
     [location, routeBase]

@@ -1,6 +1,8 @@
 package system
 
 import (
+	"errors"
+	"log"
 	"net/http"
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/app"
@@ -19,6 +21,7 @@ type dataMigrationStatus struct {
 	TargetEventID int64  `json:"targetEventId"`
 	ProcessedRows int64  `json:"processedRows"`
 	ChangedRows   int64  `json:"changedRows"`
+	AppliedRows   int64  `json:"appliedRows"`
 	StartedAtMS   int64  `json:"startedAtMs,omitempty"`
 	UpdatedAtMS   int64  `json:"updatedAtMs"`
 	FinishedAtMS  int64  `json:"finishedAtMs,omitempty"`
@@ -43,6 +46,18 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !middleware.AuthorizePanel(w, r, h.App.AdminAuthService) {
+		return
+	}
+	databaseMaintenance, err := h.App.Store.DerivedMaintenanceStatus(r.Context())
+	if err != nil {
+		log.Printf("read database maintenance status: %v", err)
+		response.Error(w, http.StatusInternalServerError, errors.New("database maintenance status unavailable"))
+		return
+	}
+	if r.URL.Query().Get("scope") == "database-maintenance" {
+		response.JSON(w, http.StatusOK, map[string]any{
+			"databaseMaintenance": databaseMaintenance,
+		})
 		return
 	}
 	events, deadLetters, err := h.App.UsageService.Counts(r.Context())
@@ -70,10 +85,12 @@ func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
 			TargetEventID: migration.TargetEventID,
 			ProcessedRows: migration.ProcessedRows,
 			ChangedRows:   migration.ChangedRows,
+			AppliedRows:   migration.AppliedRows,
 			StartedAtMS:   migration.StartedAtMS,
 			UpdatedAtMS:   migration.UpdatedAtMS,
 			FinishedAtMS:  migration.FinishedAtMS,
 		},
+		"databaseMaintenance": databaseMaintenance,
 	}
 	if h.App.DatabaseMaintenance != nil {
 		payload["database"] = h.App.DatabaseMaintenance.Snapshot()

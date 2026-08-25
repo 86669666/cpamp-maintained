@@ -88,7 +88,6 @@ type ToggleRowProps = {
   description?: string;
   checked: boolean;
   disabled?: boolean;
-  supportsPlugin?: boolean;
   onChange: (value: boolean) => void;
 };
 
@@ -831,6 +830,13 @@ export function VisualConfigEditor({
                   disabled={disabled}
                   onChange={(loggingToFile) => onChange({ loggingToFile })}
                 />
+                <ToggleRow
+                  title={t('basic_settings.request_log_enable')}
+                  description={t('basic_settings.request_log_warning')}
+                  checked={values.requestLog}
+                  disabled={disabled}
+                  onChange={(requestLog) => onChange({ requestLog })}
+                />
                 {pluginVisualConfigVisible ? (
                   <ToggleRow
                     title={t('config_management.visual.sections.system.plugins_enabled')}
@@ -1091,6 +1097,12 @@ export function VisualConfigEditor({
                       {
                         value: 'round-robin',
                         label: t('config_management.visual.sections.network.strategy_round_robin'),
+                      },
+                      {
+                        value: 'weighted-round-robin',
+                        label: t(
+                          'config_management.visual.sections.network.strategy_weighted_round_robin'
+                        ),
                       },
                       {
                         value: 'fill-first',

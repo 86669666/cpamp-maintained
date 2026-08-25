@@ -13,13 +13,13 @@
   --monitor-muted: var(--text-secondary);
   --monitor-line: var(--border-color);
   --monitor-line-strong: var(--border-primary);
-  --monitor-accent: var(--primary-color);
-  --monitor-accent-strong: var(--primary-active);
-  --monitor-accent-soft: var(--color-primary-light-9);
-  --monitor-cyan: #06b6d4;
-  --monitor-green: var(--success-color);
-  --monitor-amber: var(--warning-color);
-  --monitor-red: var(--error-color);
+  --monitor-accent: var(--data-blue-base);
+  --monitor-accent-strong: var(--data-blue-dark-2);
+  --monitor-accent-soft: var(--data-badge-info-bg);
+  --monitor-cyan: var(--data-cyan-base);
+  --monitor-green: var(--data-green-base);
+  --monitor-amber: var(--data-amber-base);
+  --monitor-red: var(--data-red-base);
   color: var(--monitor-ink);
 }
 
@@ -28,6 +28,25 @@
   display: grid;
   gap: 20px;
   min-width: 0;
+}
+
+.databaseMaintenanceHint {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--monitor-amber) 38%, var(--monitor-line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--monitor-amber) 8%, var(--monitor-surface));
+  color: var(--monitor-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.databaseMaintenanceHint strong {
+  color: var(--monitor-ink);
+  font-weight: 750;
 }
 
 .statusBar {
@@ -419,8 +438,8 @@
   height: 20px;
   padding: 0 8px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--monitor-muted) 18%, var(--monitor-surface-elevated));
-  color: var(--monitor-ink);
+  background: var(--data-badge-neutral-bg);
+  color: var(--data-badge-neutral-text);
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
@@ -432,8 +451,8 @@
 }
 
 .tabBadgeFailure {
-  background: color-mix(in srgb, var(--monitor-red) 18%, var(--monitor-surface));
-  color: var(--monitor-red);
+  background: var(--data-badge-danger-bg);
+  color: var(--data-badge-danger-text);
 }
 
 .tabButtonActive .tabBadgeFailure {
@@ -1443,6 +1462,41 @@
   font-weight: 500;
 }
 
+.realtimeRequestMetadata {
+  display: block;
+  max-width: 100%;
+  color: var(--monitor-muted);
+  font-size: 12px;
+  font-weight: 500;
+
+  summary {
+    width: fit-content;
+    max-width: 100%;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  summary:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--monitor-accent) 55%, transparent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  small {
+    display: grid;
+    gap: 2px;
+    margin-top: 4px;
+    padding-left: 16px;
+  }
+
+  small > span {
+    display: block;
+    overflow-wrap: anywhere;
+  }
+}
+
 .realtimeTimeLine {
   white-space: nowrap;
 }
@@ -1528,7 +1582,6 @@
   display: inline-block;
   min-width: 48px;
   color: var(--monitor-ink);
-  font-size: 12px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.25;
@@ -1581,7 +1634,6 @@
 .realtimeMetricText.badText {
   color: var(--monitor-red);
 }
-
 
 .logTypeCell {
   display: block;

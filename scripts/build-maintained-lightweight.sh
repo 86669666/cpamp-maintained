@@ -4,10 +4,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-baseline_commit="68b57da8c206c023120a3e7597e5d729eac2760f"
-baseline_tag="v1.11.12"
+baseline_commit="931d771344fdd5d95db5ae0adb87259eca133adc"
+baseline_tag="v1.12.4"
 variant="lightweight-plugin-lockdown-local-tools"
-revision="1"
+revision="2"
 output_dir="$repo_root/output-maintained"
 source_html="$repo_root/apps/web/dist/index.html"
 output_html="$output_dir/management.html"
@@ -108,11 +108,11 @@ from pathlib import Path
 
 metadata = {
     'variant': 'lightweight-plugin-lockdown-local-tools',
-    'revision': 1,
+    'revision': 2,
     'upstream': {
         'repository': 'https://github.com/seakee/CPA-Manager-Plus.git',
-        'tag': 'v1.11.12',
-        'commit': '68b57da8c206c023120a3e7597e5d729eac2760f',
+        'tag': 'v1.12.4',
+        'commit': '931d771344fdd5d95db5ae0adb87259eca133adc',
     },
     'sourceHead': os.environ['HEAD_COMMIT'],
     'sourceTag': os.environ.get('SOURCE_TAG') or None,

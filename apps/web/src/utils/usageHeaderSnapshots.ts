@@ -5,6 +5,10 @@ import type {
 } from '@/services/api/usageService';
 import type { AuthFileItem, CodexUsagePayload, CodexUsageWindow } from '@/types';
 import { normalizeAuthIndex } from '@/utils/authIndex';
+import {
+  resolveCodexUsageQuotaScope,
+  type CodexQuotaScopeResolution,
+} from '@/utils/quota/codexQuota';
 
 export type UsageHeaderSnapshotLookup = {
   byFileName: Map<string, UsageHeaderSnapshot>;
@@ -328,6 +332,30 @@ const getHeaderQuotaWindowResetAtMs = (
   return null;
 };
 
+const hasHeaderQuotaWindowSignal = (
+  window: ResponseHeaderQuotaWindow | null | undefined
+): boolean => {
+  if (!window) return false;
+  const usedPercent = readNumber(window.used_percent);
+  const resetAtMs = readNumber(window.reset_at_ms);
+  const resetAfterSeconds = readNumber(window.reset_after_seconds);
+  const windowMinutes = readNumber(window.window_minutes);
+  const hasResetSignal =
+    (resetAtMs !== null && resetAtMs > 0) || (resetAfterSeconds !== null && resetAfterSeconds > 0);
+  if (windowMinutes === 0 && !hasResetSignal) return false;
+  return usedPercent !== null || hasResetSignal || (windowMinutes !== null && windowMinutes > 0);
+};
+
+const getHeaderQuotaWindowResetStates = (
+  snapshot: UsageHeaderSnapshot | null | undefined
+): Array<number | null> => {
+  const quota = getHeaderSnapshotQuotaMetadata(snapshot);
+  if (!quota) return [];
+  return [quota.primary, quota.secondary]
+    .filter(hasHeaderQuotaWindowSignal)
+    .map((window) => getHeaderQuotaWindowResetAtMs(snapshot, window));
+};
+
 const getHeaderQuotaWindowSourcesByKind = (
   quota: ResponseHeaderQuotaMetadata | undefined,
   windowKind: string | null
@@ -398,10 +426,35 @@ export const isUsageHeaderQuotaSnapshotExpired = (
   nowMs = Date.now()
 ): boolean => {
   if (!hasUsageHeaderQuotaSignal(snapshot)) return false;
+  const windowResetStates = getHeaderQuotaWindowResetStates(snapshot);
+  if (windowResetStates.length > 0) {
+    return windowResetStates.every((resetAtMs) => resetAtMs !== null && resetAtMs <= nowMs);
+  }
   const candidates = getHeaderQuotaTargetResetAtMsCandidates(snapshot);
   if (candidates.length === 0) return false;
   return Math.max(...candidates) <= nowMs;
 };
+
+export const hasExpiredUsageHeaderQuotaWindow = (
+  snapshot: UsageHeaderSnapshot | null | undefined,
+  nowMs = Date.now()
+): boolean => {
+  if (!hasUsageHeaderQuotaSignal(snapshot)) return false;
+  if (
+    getHeaderQuotaWindowResetStates(snapshot).some(
+      (resetAtMs) => resetAtMs !== null && resetAtMs <= nowMs
+    )
+  ) {
+    return true;
+  }
+  return getHeaderQuotaTargetResetAtMsCandidates(snapshot).some((resetAtMs) => resetAtMs <= nowMs);
+};
+
+export const filterFreshUsageHeaderQuotaSnapshots = (
+  snapshots: UsageHeaderSnapshot[] = [],
+  nowMs = Date.now()
+): UsageHeaderSnapshot[] =>
+  snapshots.filter((snapshot) => !isUsageHeaderQuotaSnapshotExpired(snapshot, nowMs));
 
 export const getHeaderSnapshotErrorKind = (
   snapshot: UsageHeaderSnapshot | null | undefined
@@ -436,6 +489,7 @@ export type ObservedCodexHeaderQuota = {
   reachedWindowKind: string | null;
   reachedWindowSource: string | null;
   primaryOverSecondaryLimitPercent: number | null;
+  quotaScope: CodexQuotaScopeResolution;
 };
 
 const buildCodexWindowFromHeaderQuota = (
@@ -468,6 +522,12 @@ export const buildObservedCodexQuotaFromHeaderSnapshot = (
 ): ObservedCodexHeaderQuota | null => {
   const quota = getHeaderSnapshotQuotaMetadata(snapshot);
   if (!quota) return null;
+  const quotaScope = resolveCodexUsageQuotaScope({
+    model: snapshot?.model,
+    analyticsModel: snapshot?.analytics_model,
+    requestedModel: snapshot?.requested_model,
+    resolvedModel: snapshot?.resolved_model,
+  });
 
   const planType = readString(quota.plan_type) || null;
   const activeLimit = readString(quota.active_limit) || null;
@@ -538,6 +598,7 @@ export const buildObservedCodexQuotaFromHeaderSnapshot = (
     reachedWindowKind,
     reachedWindowSource,
     primaryOverSecondaryLimitPercent,
+    quotaScope,
   };
 };
 

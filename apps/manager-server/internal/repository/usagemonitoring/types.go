@@ -22,6 +22,8 @@ type APIKeySelectorValue = usageevent.APIKeySelectorValue
 type EventsPage = usageevent.EventsPage
 type EventPageItem = usageevent.EventPageItem
 type HeaderSnapshot = usageevent.HeaderSnapshot
+type AccountWindowUsageQuery = usageevent.AccountWindowUsageQuery
+type AccountWindowModelStat = usageevent.AccountWindowModelStat
 
 func currentStructureRevision(ctx context.Context, db usagepricing.RowQuerier) (string, error) {
 	return usagepricing.StructureRevision(ctx, db)

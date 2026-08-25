@@ -11,24 +11,28 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
 import { PageTransition } from '@/components/common/PageTransition';
+import { DatabaseMaintenanceBanner } from '@/components/common/DatabaseMaintenanceBanner';
+import { DatabaseMaintenanceProvider } from '@/components/common/DatabaseMaintenanceContext';
 import { MainRoutes } from '@/router/MainRoutes';
 import {
   IconGithub,
   IconSidebarAuthFiles,
   IconSidebarConfig,
   IconSidebarDashboard,
-  IconSidebarInspection,
   IconSidebarLogs,
   IconSidebarMonitor,
   IconSidebarOauth,
   IconSidebarPlugins,
   IconSidebarProviders,
-  IconSidebarQuota,
   IconSidebarSystem,
   IconSidebarUsage,
   IconFileText,
 } from '@/components/ui/icons';
-import { INLINE_LOGO_JPEG } from '@/assets/logoInline';
+import {
+  CPAMP_SYMBOL_COLOR_PNG_URL,
+  CPAMP_WORDMARK_COLOR_PNG_URL,
+  CPAMP_WORDMARK_ON_DARK_PNG_URL,
+} from '@/assets/brand';
 import {
   useAuthStore,
   useConfigStore,
@@ -48,7 +52,6 @@ import {
 } from '@/features/plugins/pluginResources';
 import { triggerHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { usePanelFeatureAvailability } from '@/hooks/usePanelFeatureAvailability';
-import { isFileLogsAvailable } from '@/features/logs/logFeatureAvailability';
 import { getDemoLogoutPath, prefixRouteBase, stripRouteBase } from '@/features/demo/demoMode';
 import { LANGUAGE_LABEL_KEYS, LANGUAGE_ORDER, STORAGE_KEY_SIDEBAR } from '@/utils/constants';
 import { isSupportedLanguage } from '@/utils/language';
@@ -62,9 +65,7 @@ const sidebarIcons: Record<string, ReactNode> = {
   aiProviders: <IconSidebarProviders size={SIDEBAR_ICON_SIZE} />,
   authFiles: <IconSidebarAuthFiles size={SIDEBAR_ICON_SIZE} />,
   oauth: <IconSidebarOauth size={SIDEBAR_ICON_SIZE} />,
-  quota: <IconSidebarQuota size={SIDEBAR_ICON_SIZE} />,
   usageAnalytics: <IconSidebarUsage size={SIDEBAR_ICON_SIZE} />,
-  codexInspection: <IconSidebarInspection size={SIDEBAR_ICON_SIZE} />,
   monitoring: <IconSidebarMonitor size={SIDEBAR_ICON_SIZE} />,
   plugins: <IconSidebarPlugins size={SIDEBAR_ICON_SIZE} />,
   config: <IconSidebarConfig size={SIDEBAR_ICON_SIZE} />,
@@ -230,7 +231,7 @@ interface MainLayoutProps {
   demoMode?: boolean;
 }
 
-export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps = {}) {
+function MainLayoutContent({ routeBase = '', demoMode = false }: MainLayoutProps = {}) {
   const { t } = useTranslation();
   const { showNotification } = useNotificationStore();
   const location = useLocation();
@@ -273,12 +274,14 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
   const headerRef = useRef<HTMLElement | null>(null);
 
   const fullBrandName = 'CPA Manager Plus';
-  const abbrBrandName = t('title.abbr');
   const isLogsPage = routePathname.startsWith('/logs');
   const isPluginResourcePage = routePathname.startsWith('/plugin-pages');
   const showSidebarLabels = !sidebarCollapsed || sidebarOpen;
-  const pluginControlMenuVisible = isPluginManagementNavVisible({ supportsPlugin });
   const configPluginsEnabled = config?.pluginsEnabled;
+  const pluginControlMenuVisible = isPluginManagementNavVisible({
+    supportsPlugin,
+    pluginsEnabled: configPluginsEnabled,
+  });
 
   // 将顶部悬浮控制区高度写入 CSS 变量，供移动端粘性元素和浮层避让。
   useLayoutEffect(() => {
@@ -504,14 +507,14 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
     };
   }, [apiBase, configPluginsEnabled, loadPluginResources]);
 
-  const fileLogsAvailable = isFileLogsAvailable(config);
   const navShortLabel = (key: string, fallback: string) => {
     const shortKey = `${key}_short`;
     const label = t(shortKey, { defaultValue: fallback });
     return label === shortKey ? fallback : label;
   };
   const dashboardNavItem: NavItem = {
-    path: '/', label: t('nav.dashboard'),
+    path: '/',
+    label: t('nav.dashboard'),
     shortLabel: navShortLabel('nav.dashboard', t('nav.dashboard')),
     icon: sidebarIcons.dashboard,
   };
@@ -532,16 +535,12 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
       }
     : null;
   const operationNavItems: NavItem[] = [
-    ...(fileLogsAvailable
-      ? [
-          {
-            path: '/logs',
-            label: t('nav.logs'),
-            shortLabel: navShortLabel('nav.logs', t('nav.logs')),
-            icon: sidebarIcons.logs,
-          },
-        ]
-      : []),
+    {
+      path: '/logs',
+      label: t('nav.logs'),
+      shortLabel: navShortLabel('nav.logs', t('nav.logs')),
+      icon: sidebarIcons.logs,
+    },
   ];
   const pluginControlNavItems: NavItem[] = pluginControlMenuVisible
     ? [
@@ -584,9 +583,12 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
     ],
     [
       {
-        path: '/auth-files',
-        label: t('nav.auth_files'),
-        shortLabel: navShortLabel('nav.auth_files', t('nav.auth_files')),
+        path: '/accounts',
+        label: t('nav.accounts', { defaultValue: t('accounts.title') }),
+        shortLabel: navShortLabel(
+          'nav.accounts',
+          t('nav.accounts', { defaultValue: t('accounts.title') })
+        ),
         icon: sidebarIcons.authFiles,
       },
       {
@@ -594,18 +596,6 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         label: t('nav.oauth', { defaultValue: 'OAuth' }),
         shortLabel: navShortLabel('nav.oauth', t('nav.oauth', { defaultValue: 'OAuth' })),
         icon: sidebarIcons.oauth,
-      },
-      {
-        path: '/quota',
-        label: t('nav.quota_management'),
-        shortLabel: navShortLabel('nav.quota_management', t('nav.quota_management')),
-        icon: sidebarIcons.quota,
-      },
-      {
-        path: '/codex-inspection',
-        label: t('nav.codex_inspection'),
-        shortLabel: navShortLabel('nav.codex_inspection', t('nav.codex_inspection')),
-        icon: sidebarIcons.codexInspection,
       },
     ],
     operationNavItems,
@@ -647,16 +637,6 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
       }
     }
 
-    const authFilesIndex = navOrder.indexOf('/auth-files');
-    if (authFilesIndex !== -1) {
-      if (normalizedPath === '/auth-files') return authFilesIndex;
-      if (normalizedPath.startsWith('/auth-files/')) {
-        if (normalizedPath.startsWith('/auth-files/oauth-excluded')) return authFilesIndex + 0.1;
-        if (normalizedPath.startsWith('/auth-files/oauth-model-alias')) return authFilesIndex + 0.2;
-        return authFilesIndex + 0.05;
-      }
-    }
-
     const exactIndex = navOrder.indexOf(normalizedPath);
     if (exactIndex !== -1) return exactIndex;
     const nestedIndex = navOrder.findIndex(
@@ -674,11 +654,10 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
 
     const from = normalize(fromPathname);
     const to = normalize(toPathname);
-    const isAuthFiles = (pathname: string) =>
-      pathname === '/auth-files' || pathname.startsWith('/auth-files/');
+    const isAccounts = (pathname: string) => pathname === '/accounts';
     const isAiProviders = (pathname: string) =>
       pathname === '/ai-providers' || pathname.startsWith('/ai-providers/');
-    if (isAuthFiles(from) && isAuthFiles(to)) return 'ios';
+    if (isAccounts(from) && isAccounts(to)) return 'ios';
     if (isAiProviders(from) && isAiProviders(to)) return 'ios';
     return 'none';
   }, []);
@@ -725,8 +704,10 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
   const activeNavItem =
     [...navItems]
       .sort((a, b) => b.path.length - a.path.length)
-      .find((item) => matchesNavPath(item, currentPath)) ?? navItems[0];
-  const currentRouteLabel = activeNavItem?.label ?? fullBrandName;
+      .find((item) => matchesNavPath(item, currentPath)) ?? null;
+  const standaloneRouteLabel =
+    currentPath === '/accounts' ? t('nav.accounts', { defaultValue: t('accounts.title') }) : null;
+  const currentRouteLabel = activeNavItem?.label ?? standaloneRouteLabel ?? fullBrandName;
 
   return (
     <div
@@ -950,12 +931,26 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         >
           <div className="sidebar-brand" title={fullBrandName}>
             <div className="sidebar-brand-main">
-              <img src={INLINE_LOGO_JPEG} alt="CPAMC logo" className="sidebar-brand-logo" />
-              {showSidebarLabels && <span className="sidebar-brand-title">{abbrBrandName}</span>}
+              <img
+                src={CPAMP_SYMBOL_COLOR_PNG_URL}
+                alt={showSidebarLabels ? '' : 'CPA Manager Plus'}
+                className="sidebar-brand-symbol"
+              />
+              {showSidebarLabels && (
+                <>
+                  <img
+                    src={CPAMP_WORDMARK_COLOR_PNG_URL}
+                    alt="CPA Manager Plus"
+                    className="sidebar-brand-wordmark sidebar-brand-wordmark-light"
+                  />
+                  <img
+                    src={CPAMP_WORDMARK_ON_DARK_PNG_URL}
+                    alt="CPA Manager Plus"
+                    className="sidebar-brand-wordmark sidebar-brand-wordmark-dark"
+                  />
+                </>
+              )}
             </div>
-            {!showSidebarLabels && (
-              <span className="sidebar-brand-short">{abbrBrandName.charAt(0) || 'C'}</span>
-            )}
           </div>
 
           <div className="nav-section">
@@ -1001,6 +996,7 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
               .filter(Boolean)
               .join(' ')}
           >
+            <DatabaseMaintenanceBanner />
             <PageTransition
               key={routeBase || 'main'}
               render={(location) => <MainRoutes location={location} routeBase={routeBase} />}
@@ -1017,5 +1013,13 @@ export function MainLayout({ routeBase = '', demoMode = false }: MainLayoutProps
         </div>
       </div>
     </div>
+  );
+}
+
+export function MainLayout(props: MainLayoutProps = {}) {
+  return (
+    <DatabaseMaintenanceProvider>
+      <MainLayoutContent {...props} />
+    </DatabaseMaintenanceProvider>
   );
 }

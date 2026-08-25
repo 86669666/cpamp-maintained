@@ -46,7 +46,10 @@ export const buildEventRows = (
         return null;
       }
 
-      const authIndex = normalizeAuthIndex(detail.auth_index) ?? '-';
+      const authIndexIdentity = normalizeAuthIndex(detail.auth_index) ?? '';
+      const authIndex = authIndexIdentity || '-';
+      const sourceIdentity = readString(detail.source);
+      const sourceHashIdentity = readString(detail.source_hash ?? detail.sourceHash);
       const authMeta = authMetaMap.get(authIndex);
       const sourceMeta = resolveSourceDisplay(
         detail.source,
@@ -64,6 +67,8 @@ export const buildEventRows = (
       const snapshotProvider = readString(
         detail.auth_provider_snapshot ?? detail.authProviderSnapshot
       );
+      const eventProvider = readString(detail.provider);
+      const effectiveProvider = snapshotProvider || eventProvider;
       const snapshotDisplay = snapshotAccount || snapshotLabel;
       const channelMeta =
         channelByAuthIndex.get(authIndex) ||
@@ -103,6 +108,10 @@ export const buildEventRows = (
       const endpoint = readString(detail.__endpoint) || '-';
       const endpointMethod = readString(detail.__endpointMethod) || '-';
       const endpointPath = readString(detail.__endpointPath) || endpoint;
+      const requestedModel = readString(detail.__requestedModel);
+      const clientIp = readString(detail.client_ip ?? detail.clientIp);
+      const xForwardedFor = readString(detail.x_forwarded_for ?? detail.xForwardedFor);
+      const userAgent = readString(detail.user_agent ?? detail.userAgent);
       const resolvedModel = readString(detail.__resolvedModel);
       const projectId = readString(detail.auth_project_id_snapshot ?? detail.authProjectIdSnapshot);
       const inputTokens = Math.max(Number(detail.tokens?.input_tokens) || 0, 0);
@@ -190,23 +199,33 @@ export const buildEventRows = (
         dayKey,
         hourLabel,
         model: readString(detail.__modelName) || '-',
+        requestedModel: requestedModel || undefined,
         resolvedModel: resolvedModel || undefined,
         endpoint,
         endpointMethod,
         endpointPath,
+        clientIp,
+        xForwardedFor,
+        userAgent,
         sourceKey,
         source: sourceLabel,
+        sourceIdentity,
+        sourceHashIdentity,
         sourceMasked,
         account,
+        accountIdentity: snapshotAccount,
         accountMasked,
         authIndex,
+        authIndexIdentity,
         authIndexMasked: maskAuthIndex(authIndex),
         authLabel: authMeta?.label || snapshotLabel || sourceMasked,
+        authLabelIdentity: snapshotLabel,
         projectId,
         apiKeyHash,
         apiKeyLabel,
         apiKeyMasked,
-        provider: authMeta?.provider || snapshotProvider || sourceMeta.type || '-',
+        provider: authMeta?.provider || snapshotProvider || eventProvider || sourceMeta.type || '-',
+        providerIdentity: effectiveProvider,
         planType: authMeta?.planType || '-',
         channel: channelLabel,
         channelHost: channelMeta?.host || '-',
@@ -252,8 +271,12 @@ export const buildEventRows = (
           channelMeta?.host,
           endpointPath,
           endpointMethod,
+          clientIp,
+          xForwardedFor,
+          userAgent,
           authMeta?.provider || snapshotProvider,
           authMeta?.planType,
+          requestedModel,
           resolvedModel,
           projectId,
           reasoningEffort,

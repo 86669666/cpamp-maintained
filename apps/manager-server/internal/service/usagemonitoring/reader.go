@@ -53,6 +53,22 @@ func (r *Reader) AccountStats(ctx context.Context, filter store.AnalyticsFilter)
 	return rows, true
 }
 
+func (r *Reader) AccountWindowStats(ctx context.Context, windows []store.AccountWindowUsageQuery) ([]store.AccountWindowModelStat, bool) {
+	if r == nil || r.store == nil {
+		return nil, false
+	}
+	rows, state, available, err := r.store.UsageMonitoringAccountWindowStats(ctx, windows)
+	if err != nil {
+		r.logFallback(fmt.Sprintf("account window projection query failed: %v", err))
+		return nil, false
+	}
+	if !available {
+		r.logFallback(fmt.Sprintf("account window projection unavailable: schema_version=%d status=%s", state.SchemaVersion, state.Status))
+		return nil, false
+	}
+	return rows, true
+}
+
 func (r *Reader) APIKeyStats(ctx context.Context, filter store.AnalyticsFilter) ([]store.APIKeyModelStat, bool) {
 	if r == nil || r.store == nil {
 		return nil, false

@@ -16,6 +16,7 @@ import (
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/deadletter"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/modelprice"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotacooldown"
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/quotasnapshot"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/setting"
 	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageaggregate"
@@ -42,6 +43,7 @@ type CodexInspectionLog = model.CodexInspectionLog
 type CodexInspectionDisableOwnership = model.CodexInspectionDisableOwnership
 type CodexInspectionLease = model.CodexInspectionLease
 type InsertResult = model.InsertResult
+type LegacyQuotaSnapshotBackfillResult = quotasnapshot.LegacyBackfillResult
 type ModelPrice = model.ModelPrice
 type ModelPriceContextTier = model.ModelPriceContextTier
 type ModelPriceServiceTier = model.ModelPriceServiceTier
@@ -51,6 +53,7 @@ type ModelUsageSummary = model.ModelUsageSummary
 type APIKeyAlias = model.APIKeyAlias
 type QuotaCooldown = model.QuotaCooldown
 type QuotaCooldownUpsert = model.QuotaCooldownUpsert
+type AccountQuotaSnapshot = model.AccountQuotaSnapshot
 type AccountActionCandidate = model.AccountActionCandidate
 type AccountActionCandidateUpsert = model.AccountActionCandidateUpsert
 type AutomationSettings = model.AutomationSettings
@@ -83,6 +86,10 @@ type TaskBucket = usageevent.TaskBucket
 type EventPageItem = usageevent.EventPageItem
 type EventsPage = usageevent.EventsPage
 type HeaderSnapshot = usageevent.HeaderSnapshot
+type AccountWindowUsageQuery = usageevent.AccountWindowUsageQuery
+type AccountWindowModelStat = usageevent.AccountWindowModelStat
+type LatestAccountRequestQuery = usageevent.LatestAccountRequestQuery
+type LatestAccountRequest = usageevent.LatestAccountRequest
 type UsageRollupCheckpoint = usagerollup.Checkpoint
 type UsageRollupCatchUpResult = usagerollup.CatchUpResult
 type AccountHistoryRollupRow = usagerollup.AccountHistoryRow
@@ -129,6 +136,7 @@ type Store struct {
 	CodexInspections codexinspection.Repository
 	DataMigrations   datamigration.Repository
 	QuotaCooldowns   quotacooldown.Repository
+	QuotaSnapshots   quotasnapshot.Repository
 	UsageAggregates  usageaggregate.Repository
 	UsagePricing     usagepricing.Repository
 	UsageMonitoring  usagemonitoring.Repository
@@ -155,6 +163,7 @@ func New(db *sql.DB, protector ...*security.Protector) *Store {
 		CodexInspections: codexinspection.New(db),
 		DataMigrations:   datamigration.New(db),
 		QuotaCooldowns:   quotacooldown.New(db),
+		QuotaSnapshots:   quotasnapshot.New(db),
 		UsageAggregates:  usageaggregate.New(db),
 		UsagePricing:     usagepricing.New(db),
 		UsageMonitoring:  usagemonitoring.New(db),
@@ -167,6 +176,41 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *Store) StartDerivedMaintenance(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	sqliterepo.StartDerivedMaintenance(ctx, s.db)
+}
+
+func (s *Store) RunDerivedStartupMaintenance(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	return sqliterepo.RunDerivedStartupMaintenance(ctx, s.db)
+}
+
+func (s *Store) DerivedMaintenanceStatus(ctx context.Context) (sqliterepo.DerivedMaintenanceStatus, error) {
+	if s == nil {
+		return sqliterepo.DerivedMaintenanceStatus{Reasons: []string{}}, nil
+	}
+	return sqliterepo.ReadDerivedMaintenanceStatus(ctx, s.db)
+}
+
+func (s *Store) BackfillLegacyQuotaSnapshotsBatch(ctx context.Context, maxGroupSize int) (LegacyQuotaSnapshotBackfillResult, error) {
+	if s == nil {
+		return LegacyQuotaSnapshotBackfillResult{Completed: true}, nil
+	}
+	return quotasnapshot.BackfillLegacySnapshotsBatch(ctx, s.db, maxGroupSize)
+}
+
+func (s *Store) RecordLegacyQuotaSnapshotBackfillFailure(ctx context.Context, migrationErr error) error {
+	if s == nil {
+		return nil
+	}
+	return quotasnapshot.RecordLegacyBackfillFailure(ctx, s.db, migrationErr)
 }
 
 func (s *Store) SaveSetup(ctx context.Context, setup Setup) error {
@@ -507,6 +551,10 @@ func (s *Store) UsageMonitoringAccountStats(ctx context.Context, filter Analytic
 	return s.UsageMonitoring.LoadAccountStats(ctx, filter)
 }
 
+func (s *Store) UsageMonitoringAccountWindowStats(ctx context.Context, windows []AccountWindowUsageQuery) ([]AccountWindowModelStat, UsageMonitoringState, bool, error) {
+	return s.UsageMonitoring.LoadAccountWindowStats(ctx, windows)
+}
+
 func (s *Store) UsageMonitoringAPIKeyStats(ctx context.Context, filter AnalyticsFilter) ([]APIKeyModelStat, UsageMonitoringState, bool, error) {
 	return s.UsageMonitoring.LoadAPIKeyStats(ctx, filter)
 }
@@ -641,6 +689,10 @@ func (s *Store) LatestUsageEventID(ctx context.Context) (int64, error) {
 
 func (s *Store) AccountHistoryRollupRows(ctx context.Context, accountKeys []string) ([]AccountHistoryRollupRow, error) {
 	return s.UsageRollups.AccountHistoryRows(ctx, accountKeys)
+}
+
+func (s *Store) RecentAccountRequests(ctx context.Context, targets []LatestAccountRequestQuery, limit int) ([]LatestAccountRequest, error) {
+	return s.UsageEvents.RecentAccountRequests(ctx, targets, limit)
 }
 
 func (s *Store) DashboardHourlyRollupRows(ctx context.Context, fromMS, toMS int64) ([]DashboardHourlyRollupRow, error) {
@@ -793,6 +845,10 @@ func (s *Store) FailureSourcesWithFilter(ctx context.Context, filter AnalyticsFi
 
 func (s *Store) AccountModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]AccountModelStat, error) {
 	return s.UsageEvents.AccountModelStatsWithFilter(ctx, filter)
+}
+
+func (s *Store) AccountWindowModelStats(ctx context.Context, windows []AccountWindowUsageQuery) ([]AccountWindowModelStat, error) {
+	return s.UsageEvents.AccountWindowModelStats(ctx, windows)
 }
 
 func (s *Store) CredentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {

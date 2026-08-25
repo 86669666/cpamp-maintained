@@ -2,6 +2,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { TFunction } from 'i18next';
 import { AccountExpandedDetails, AccountOverviewCard } from './MonitoringCenterPage';
+import monitoringCenterPageSource from './MonitoringCenterPage.tsx?raw';
+import accountOverviewPanelSource from './components/AccountOverviewPanel.tsx?raw';
 import { MonitoringSummarySection } from '@/features/monitoring/components/MonitoringSummarySection';
 import {
   buildPrimarySummaryCards,
@@ -119,6 +121,50 @@ describe('MonitoringCenterPage dimension counts', () => {
         apiKeySelectorCount: 8,
       })
     ).toEqual({ accountCount: 9, apiKeyCount: 8 });
+  });
+});
+
+describe('MonitoringCenterPage quota refresh wiring', () => {
+  it('keeps account expansion separate from manual Provider quota refresh', () => {
+    const toggleStart = monitoringCenterPageSource.indexOf('const toggleAccountExpanded');
+    const focusStart = monitoringCenterPageSource.indexOf('const focusAccount', toggleStart);
+    const toggleSource = monitoringCenterPageSource.slice(toggleStart, focusStart);
+
+    expect(toggleStart).toBeGreaterThanOrEqual(0);
+    expect(focusStart).toBeGreaterThan(toggleStart);
+    expect(toggleSource).toContain('setExpandedAccounts');
+    expect(toggleSource).not.toContain('loadAccountQuota');
+    expect(monitoringCenterPageSource).toContain('onLoadAccountQuota={loadAccountQuota}');
+    expect(monitoringCenterPageSource).toContain('createKeyedSerialTaskQueue');
+    expect(monitoringCenterPageSource).toContain('accountQuotaRefreshQueue.run');
+    expect(monitoringCenterPageSource).toContain('runProviderCredentialTaskPlan');
+    expect(monitoringCenterPageSource).toContain(
+      'perProviderConcurrency: MAX_CONCURRENT_ACCOUNT_QUOTA_REQUESTS_PER_PROVIDER'
+    );
+    expect(monitoringCenterPageSource).not.toContain(
+      'targets.map((target) => requestAccountQuota(target, t))'
+    );
+    expect(monitoringCenterPageSource).toContain('useHeaderSnapshotsLoader({');
+    expect(monitoringCenterPageSource).toContain('const rowIds = new Set([');
+    expect(monitoringCenterPageSource).toContain('...accountQuotaTargetsByRowId.keys()');
+    expect(monitoringCenterPageSource).toContain(
+      'resolveMonitoringAccountFocusAction(focusedAccountId, row)'
+    );
+    expect(monitoringCenterPageSource).toContain('accountQuotaTargetsByRowId.get(rowId)');
+    expect(monitoringCenterPageSource).toContain('accountQuotaRequestIdsByRowIdRef.current[rowId]');
+    expect(monitoringCenterPageSource).toContain('commitAccountQuotaState(rowId, {');
+    expect(monitoringCenterPageSource).toContain(
+      '${accountQuotaContextKey}\\u0000${rowId}\\u0000${targetKey}'
+    );
+    expect(monitoringCenterPageSource).toContain('setFocusedAccountId(action.rowId)');
+    expect(monitoringCenterPageSource).not.toContain('focusedAccount === account');
+    expect(monitoringCenterPageSource).not.toContain('accountQuotaTargetsByAccount');
+    expect(accountOverviewPanelSource).toContain('expandedAccounts[row.id]');
+    expect(accountOverviewPanelSource).toContain('focusedAccountId === row.id');
+    expect(accountOverviewPanelSource).toContain('accountAuthStateByRowId.get(row.id)');
+    expect(accountOverviewPanelSource).toContain('accountQuotaStatesByRowId[row.id]');
+    expect(accountOverviewPanelSource).not.toContain('accountQuotaStates[row.account]');
+    expect(monitoringCenterPageSource).not.toContain('onResponse: (response) =>');
   });
 });
 
@@ -347,6 +393,26 @@ describe('MonitoringCenterPage account card', () => {
 
     expect(display.primary).toBe('Claude Relay');
     expect(display.meta).toBe('Provider: openai');
+  });
+
+  it('keeps the provider metadata line when it matches the realtime primary label', () => {
+    const display = buildRealtimeSourceDisplay(
+      {
+        account: 'Edge Experiments',
+        accountMasked: 'Edge Experiments',
+        authLabel: 'DeepSeek Ops',
+        channel: 'deepseek',
+        channelHost: '-',
+        provider: 'deepseek',
+        source: 'Edge Experiments',
+        sourceMasked: 'Edge Experiments',
+      },
+      t
+    );
+
+    expect(display.primary).toBe('deepseek');
+    expect(display.meta).toBe('Provider: deepseek');
+    expect(display.meta).not.toContain('Edge Experiments');
   });
 
   it('shows one realtime source meta value by priority', () => {
