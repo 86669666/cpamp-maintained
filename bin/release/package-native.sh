@@ -10,7 +10,7 @@ server_src="${repo_root}/apps/manager-server"
 native_script_src="${repo_root}/bin/native"
 
 if [ ! -f "${web_html}" ]; then
-  echo "missing ${web_html}; run npm run build first" >&2
+  echo "missing ${web_html}; run bun run build first" >&2
   exit 1
 fi
 

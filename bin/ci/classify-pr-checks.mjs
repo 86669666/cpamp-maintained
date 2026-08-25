@@ -43,7 +43,7 @@ const triggersFrontend = (filePath) =>
   filePath === 'README.md' ||
   filePath === 'README_CN.md' ||
   filePath === 'package.json' ||
-  filePath === 'package-lock.json' ||
+  filePath === 'bun.lock' ||
   filePath === '.github/dependabot.yml' ||
   filePath === 'eslint.config.js' ||
   filePath === 'bin/install-cpamp.sh' ||
@@ -57,7 +57,7 @@ const triggersNativeControl = (filePath) =>
   filePath === 'bin/release/package-native.sh' ||
   filePath === 'tests/nativeControlScripts.test.mjs' ||
   filePath === 'package.json' ||
-  filePath === 'package-lock.json';
+  filePath === 'bun.lock';
 
 const triggersDocker = (filePath) =>
   startsWithPath(filePath, 'apps/web') ||
@@ -66,13 +66,13 @@ const triggersDocker = (filePath) =>
   filePath === 'docker-compose.manager.yml' ||
   filePath === '.dockerignore' ||
   filePath === 'package.json' ||
-  filePath === 'package-lock.json';
+  filePath === 'bun.lock';
 
 const triggersDemoDocs = (filePath) =>
   startsWithPath(filePath, 'apps/web') ||
   startsWithPath(filePath, 'apps/docs') ||
   filePath === 'package.json' ||
-  filePath === 'package-lock.json';
+  filePath === 'bun.lock';
 
 const triggersReleaseContent = (filePath) =>
   startsWithPath(filePath, 'docs/release-notes') ||

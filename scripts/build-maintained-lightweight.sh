@@ -18,7 +18,7 @@ fail() {
 }
 
 command -v git >/dev/null || fail "git is required"
-command -v npm >/dev/null || fail "npm is required"
+command -v bun >/dev/null || fail "bun is required"
 command -v sha256sum >/dev/null || fail "sha256sum is required"
 command -v python3 >/dev/null || fail "python3 is required"
 
@@ -50,10 +50,10 @@ if [[ -n "${VERSION:-}" ]]; then
 fi
 build_version="${RELEASE_TAG:-${source_tag:-dev}}"
 
-npm run type-check
-npm run lint
-npm run test
-VERSION="$build_version" npm run build
+bun run type-check
+bun run lint
+bun run test
+VERSION="$build_version" bun run build
 
 [[ -s "$source_html" ]] || fail "single-file web build is missing"
 mkdir -p "$output_dir"

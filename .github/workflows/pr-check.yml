@@ -76,31 +76,30 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2c39 # v2.0.2
         with:
-          node-version: '24'
-          cache: npm
+          bun-version: 1.3.14
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Type check
-        run: npm run type-check
+        run: bun run type-check
 
       - name: Lint
-        run: npm run lint
+        run: bun run lint
 
       - name: Test
-        run: npm run test
+        run: bun run test
 
       - name: Build
-        run: npm --workspace apps/web run build:bundle
+        run: bun run --cwd apps/web build:bundle
         env:
           VERSION: ci
 
       - name: Check demo isolation
-        run: npm run check:demo-isolation
+        run: bun run check:demo-isolation
 
   manager-server:
     name: Manager Server
@@ -159,17 +158,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2c39 # v2.0.2
         with:
-          node-version: '24'
-          cache: npm
+          bun-version: 1.3.14
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Test native control scripts
-        run: npx vitest run tests/nativeControlScripts.test.mjs
+        run: bunx vitest run tests/nativeControlScripts.test.mjs
 
       - name: Validate native packaging script syntax
         if: runner.os != 'Windows'
@@ -218,22 +216,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2c39 # v2.0.2
         with:
-          node-version: '24'
-          cache: npm
+          bun-version: 1.3.14
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Build demo site
-        run: npm --workspace apps/web run build:demo:bundle
+        run: bun run --cwd apps/web build:demo:bundle
         env:
           VERSION: ci-demo
 
       - name: Build docs site
-        run: npm run docs:build
+        run: bun run docs:build
 
   release-content:
     name: Release Content
@@ -247,11 +244,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2c39 # v2.0.2
         with:
-          node-version: '24'
-          cache: npm
+          bun-version: 1.3.14
 
       - name: Validate changed release content
         shell: bash
@@ -273,7 +269,7 @@ jobs:
             git diff --name-only --no-renames --diff-filter=A -z "${PUSH_BEFORE_SHA}..${CURRENT_SHA}" > "${changed_files}"
           fi
 
-          npm run --silent release:validate -- \
+          bun run --silent release:validate -- \
             --changed-content \
             --repository-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --null < "${changed_files}"

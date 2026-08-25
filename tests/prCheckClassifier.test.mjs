@@ -133,8 +133,8 @@ describe('PR check classifier', () => {
     });
   });
 
-  it('runs Node and Docker checks for root dependency changes', () => {
-    expect(classifyChangedFiles(['package-lock.json'])).toEqual({
+  it('runs Bun and Docker checks for root dependency changes', () => {
+    expect(classifyChangedFiles(['bun.lock'])).toEqual({
       ...noChecks,
       frontend: true,
       native_control: true,
