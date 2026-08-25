@@ -1,12 +1,12 @@
-FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
+FROM --platform=$BUILDPLATFORM oven/bun:1.3.14-alpine AS web-build
 ARG VERSION=dev
 WORKDIR /app
-COPY package*.json ./
+COPY package.json bun.lock ./
 COPY apps/web/package.json ./apps/web/package.json
-RUN npm ci
+COPY apps/docs/package.json ./apps/docs/package.json
+RUN bun install --frozen-lockfile
 COPY apps/web ./apps/web
-WORKDIR /app/apps/web
-RUN VERSION=$VERSION npm run build
+RUN VERSION=$VERSION bun run --cwd apps/web build
 
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS service-build
 ARG TARGETOS

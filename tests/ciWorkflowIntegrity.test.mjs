@@ -7,6 +7,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const workflowDir = path.join(repoRoot, '.github', 'workflows');
 const readWorkflow = (name) => readFileSync(path.join(workflowDir, name), 'utf8');
 const dependabotConfig = readFileSync(path.join(repoRoot, '.github', 'dependabot.yml'), 'utf8');
+const managerServerDockerfile = readFileSync(
+  path.join(repoRoot, 'Dockerfile.manager-server'),
+  'utf8'
+);
 
 const externalActions = (workflow) =>
   [...workflow.matchAll(/^\s*uses:\s*([^\s#]+)@([^\s#]+)/gm)]
@@ -158,6 +162,15 @@ describe('GitHub Actions workflow integrity', () => {
 
   it('does not retain the main-only standalone Demo and Docs workflow', () => {
     expect(existsSync(path.join(workflowDir, 'demo-docs-check.yml'))).toBe(false);
+  });
+
+  it('keeps the Manager Server image build on the pinned Bun-only toolchain', () => {
+    expect(managerServerDockerfile).toContain('oven/bun:1.3.14-alpine');
+    expect(managerServerDockerfile).toContain('COPY package.json bun.lock ./');
+    expect(managerServerDockerfile).toContain('bun install --frozen-lockfile');
+    expect(managerServerDockerfile).toContain('VERSION=$VERSION bun run --cwd apps/web build');
+    expect(managerServerDockerfile).not.toMatch(/\bnpm\b|\bnpx\b|\bpnpm\b|\byarn\b/);
+    expect(managerServerDockerfile).not.toContain('package*.json');
   });
 
   it('keeps GitHub Actions dependency updates on the integration branch', () => {
