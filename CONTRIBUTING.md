@@ -47,10 +47,10 @@ the change crosses frontend, Manager Server, packaging, or runtime boundaries.
 
 | Area | Command |
 | --- | --- |
-| Frontend type and lint | `npm run type-check` and `npm run lint` |
-| Frontend and repository tests | `npm run test` |
-| Frontend bundle | `npm run build` |
-| Manager Server | `npm run manager-server:test` |
+| Frontend type and lint | `bun run type-check` and `bun run lint` |
+| Frontend and repository tests | `bun run test` |
+| Frontend bundle | `bun run build` |
+| Manager Server | `bun run manager-server:test` |
 | Concurrent backend behavior | `cd apps/manager-server && go test -race ./...` |
 
 CI runs the applicable checks on pull requests to `dev`. Passing CI does not

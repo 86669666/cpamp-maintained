@@ -37,6 +37,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2c39 # v2.0.2
+        with:
+          bun-version: 1.3.14
+
       - name: Classify changed paths
         id: classify
         shell: bash
@@ -62,7 +67,7 @@ jobs:
           while IFS= read -r -d '' file_path; do
             printf -- '- %q\n' "${file_path}"
           done < "${changed_files}"
-          node bin/ci/classify-pr-checks.mjs --null < "${changed_files}" >> "${GITHUB_OUTPUT}"
+          bun bin/ci/classify-pr-checks.mjs --null < "${changed_files}" >> "${GITHUB_OUTPUT}"
 
   frontend:
     name: Frontend

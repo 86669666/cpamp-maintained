@@ -60,7 +60,7 @@ jobs:
             dry_run=false
           fi
 
-          prerelease="$(node --input-type=module - "${release_tag}" <<'NODE'
+          prerelease="$(bun - "${release_tag}" <<'BUN'
           import { parseReleaseTag } from './bin/release/validate-release.mjs';
 
           try {
@@ -69,7 +69,7 @@ jobs:
             console.error(error instanceof Error ? error.message : String(error));
             process.exit(1);
           }
-          NODE
+          BUN
           )"
 
           echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"

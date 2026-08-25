@@ -70,7 +70,8 @@ describe('GitHub Actions workflow integrity', () => {
 
     expect(workflow).toContain('git diff --name-only --no-renames -z');
     expect(workflow).toContain('git show --pretty=format: --name-only --no-renames -z');
-    expect(workflow).toContain('classify-pr-checks.mjs --null');
+    expect(workflow).toContain('bun bin/ci/classify-pr-checks.mjs --null');
+    expect(workflow).not.toContain('node bin/ci/classify-pr-checks.mjs');
   });
 
   it('serializes every publishing stage behind release preflight', () => {
@@ -90,6 +91,8 @@ describe('GitHub Actions workflow integrity', () => {
     const publishJob = jobBlock(workflow, 'publish_github_release');
 
     expect(buildJob).toContain('scripts/build-maintained-lightweight.sh');
+    expect(workflow).toContain('prerelease="$(bun - "${release_tag}"');
+    expect(workflow).not.toMatch(/\bnode\s+--input-type=module\b/);
     expect(buildJob).toContain('RELEASE_TAG: ${{ needs.preflight.outputs.release_tag }}');
     expect(buildJob).toContain('DRY_RUN: ${{ needs.preflight.outputs.dry_run }}');
     expect(buildJob).toContain('if [ "${DRY_RUN}" = "true" ]');

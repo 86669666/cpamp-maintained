@@ -197,7 +197,7 @@ the workflow before any asset publishing. Run the validator
 locally with:
 
 ```bash
-npm run release:validate -- --tag v1.2.3 --content-only
+bun run release:validate -- --tag v1.2.3 --content-only
 ```
 
 For a complete topology check, provide the candidate SHA and fetched protected
