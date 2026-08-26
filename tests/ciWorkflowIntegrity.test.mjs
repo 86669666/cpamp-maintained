@@ -103,6 +103,12 @@ describe('GitHub Actions workflow integrity', () => {
     const buildJob = jobBlock(workflow, 'build_release_assets');
     const publishJob = jobBlock(workflow, 'publish_github_release');
 
+    expect(buildJob).toContain(
+      'git fetch --force https://github.com/seakee/CPA-Manager-Plus.git'
+    );
+    expect(buildJob).toContain(
+      'test "$(git rev-list -n 1 v1.12.4)" = "931d771344fdd5d95db5ae0adb87259eca133adc"'
+    );
     expect(buildJob).toContain('scripts/build-maintained-lightweight.sh');
     expect(workflow).toContain('prerelease="$(bun - "${release_tag}"');
     expect(workflow).not.toMatch(/\bnode\s+--input-type=module\b/);
