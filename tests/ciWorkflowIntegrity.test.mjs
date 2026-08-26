@@ -85,6 +85,19 @@ describe('GitHub Actions workflow integrity', () => {
     }
   });
 
+  it('installs the pinned Bun runtime before release preflight executes Bun', () => {
+    const workflow = readWorkflow('release.yml');
+    const preflightJob = jobBlock(workflow, 'preflight');
+
+    expect(preflightJob).toContain(
+      'oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2c39'
+    );
+    expect(preflightJob).toContain('bun-version: 1.3.14');
+    expect(preflightJob.indexOf('- name: Setup Bun')).toBeLessThan(
+      preflightJob.indexOf('- name: Resolve release context')
+    );
+  });
+
   it('publishes the maintained lightweight artifact with complete provenance', () => {
     const workflow = readWorkflow('release.yml');
     const buildJob = jobBlock(workflow, 'build_release_assets');
