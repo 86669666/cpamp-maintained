@@ -51,11 +51,12 @@ func (s *Service) WriteCodexInspectionResult(ctx context.Context, result model.C
 		observedAtMS = s.now().UnixMilli()
 	}
 	account := AccountTarget{
-		AuthFileSnapshot:     result.FileName,
-		AuthProviderSnapshot: "codex",
-		AuthIndex:            result.AuthIndex,
-		AccountSnapshot:      result.AccountSnapshot,
-		Source:               result.FileName,
+		AuthFileSnapshot:      result.FileName,
+		AuthProviderSnapshot:  "codex",
+		AuthIndex:             result.AuthIndex,
+		AccountSnapshot:       result.AccountSnapshot,
+		AuthAccountIDSnapshot: result.AccountID,
+		Source:                result.FileName,
 	}
 	if _, ok := usageidentity.AccountKey(account.identityFields("codex")); !ok {
 		return nil
@@ -191,6 +192,7 @@ func quotaSnapshotEntryFromUsageEvent(event usage.Event) (WriteEntry, bool) {
 		AuthLabelSnapshot:     event.AuthLabelSnapshot,
 		AuthFileSnapshot:      event.AuthFileSnapshot,
 		AuthProviderSnapshot:  firstNonEmpty(event.AuthProviderSnapshot, provider),
+		AuthAccountIDSnapshot: event.AuthAccountIDSnapshot,
 		AuthProjectIDSnapshot: event.AuthProjectIDSnapshot,
 		AuthIndex:             event.AuthIndex,
 		Source:                event.Source,

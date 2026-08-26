@@ -202,13 +202,13 @@ docker run -d \
 ## 开发
 
 ```bash
-npm install
-npm run dev
-npm run type-check
-npm run lint
-npm run test
-npm run build
-npm run docs:build
+bun install --frozen-lockfile
+bun run dev
+bun run type-check
+bun run lint
+bun run test
+bun run build
+bun run docs:build
 ```
 
 Manager Server：
@@ -229,11 +229,11 @@ docker compose -f docker-compose.manager.yml up --build
 
 ## 发布
 
-- `npm run build` 生成单文件 `apps/web/dist/index.html`。
+- `bun run build` 生成单文件 `apps/web/dist/index.html`。
 - `bin/release/package-native.sh` 将面板内置到原生包。
 - 发布说明按 `release/<version> -> dev -> main` 流程合入，并从已验证的
   `main` promotion merge 推送严格的 `vX.Y.Z` 或预发布 tag。
-- `npm run release:validate -- --tag <tag> --content-only` 会在创建 tag 前
+- `bun run release:validate -- --tag <tag> --content-only` 会在创建 tag 前
   校验三个必需的发布文件。
 - `.github/workflows/release.yml` 支持从 `main` 手动执行 dry-run，只做校验和
   构建，不发布 GitHub Release、容器镜像或 Telegram 消息。

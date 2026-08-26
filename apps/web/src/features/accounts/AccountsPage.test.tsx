@@ -461,6 +461,7 @@ const { mocks } = vi.hoisted(() => {
           target?: CodexReauthTarget | null,
           snapshot?: CredentialInspectionSnapshot | null
         ) => void | Promise<void>;
+        onCodexReauthStart?: (target: CodexReauthTarget) => boolean | void;
         onOpenCredential: (target: CredentialInspectionTarget) => void;
       },
       quotaState: {
@@ -668,6 +669,7 @@ vi.mock('@/features/monitoring/components/CredentialHealthInspectionWorkspace', 
       target?: CodexReauthTarget | null,
       snapshot?: CredentialInspectionSnapshot | null
     ) => void | Promise<void>;
+    onCodexReauthStart?: (target: CodexReauthTarget) => boolean | void;
     onOpenCredential: (target: CredentialInspectionTarget) => void;
   }) => {
     mocks.lastHealthWorkspaceProps = props;
@@ -794,6 +796,7 @@ vi.mock('@/services/api/usageService', async (importOriginal) => {
 
 vi.mock('@/stores', () => ({
   captureQuotaCacheGeneration: () => 0,
+  publishAccountCredentialMutationRevision: vi.fn(),
   commitIfQuotaCacheCurrent: (_generation: number, commit: () => void) => {
     commit();
     return true;
@@ -1095,6 +1098,11 @@ const runCodexReauthSuccessAndCaptureError = async (): Promise<unknown> => {
   return caught;
 };
 
+const runInspectionCodexReauth = async (target: CodexReauthTarget): Promise<void> => {
+  expect(mocks.lastHealthWorkspaceProps?.onCodexReauthStart?.(target)).not.toBe(false);
+  await mocks.lastHealthWorkspaceProps?.onCredentialsChanged(target);
+};
+
 describe('AccountsPage replacement flows', () => {
   afterEach(async () => {
     const restoreWindow = typeof window === 'undefined';
@@ -1351,6 +1359,7 @@ describe('AccountsPage replacement flows', () => {
   it('keeps a direct re-login pending after a credential reload failure and retries it manually', async () => {
     const file = {
       ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      account_id: 'space-codex',
       status: 'error',
       statusMessage: 'token_expired',
       last_refresh: 1_000,
@@ -1421,9 +1430,11 @@ describe('AccountsPage replacement flows', () => {
       return mocks.files;
     });
 
-    expect(await runCodexReauthSuccessAndCaptureError()).toEqual(
-      new Error('notification.refresh_failed')
-    );
+    expect(await runCodexReauthSuccessAndCaptureError()).toMatchObject({
+      name: 'CodexReauthReconciliationError',
+      code: 'identity_unconfirmed',
+      message: 'codex_reauth.identity_unconfirmed',
+    });
 
     expect(listPendingAccountDirectReauths('http://cpa-a.local:8317:manager-key')).toHaveLength(1);
   });
@@ -1431,6 +1442,7 @@ describe('AccountsPage replacement flows', () => {
   it('retries a pending direct re-login after Accounts remounts', async () => {
     const file = {
       ...makeCodexFile('codex.json', 'auth-1', 'codex@example.com'),
+      account_id: 'space-codex',
       status: 'error',
       statusMessage: 'token_expired',
       last_refresh: 1_000,
@@ -4874,10 +4886,14 @@ describe('AccountsPage replacement flows', () => {
   it('invalidates only the reauthorized shared credential and ignores its late quota response', async () => {
     const first = {
       ...makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com'),
+      account_id: 'space-first',
       last_refresh: 1_000,
       modified: 1_100,
     } as AuthFileItem;
-    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    const second = {
+      ...makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com'),
+      account_id: 'space-second',
+    } as AuthFileItem;
     mocks.files = [first, second];
     installCodexQuotaStoreMutationMock();
     mocks.quotaState.codexQuota = {
@@ -4930,11 +4946,12 @@ describe('AccountsPage replacement flows', () => {
           2_000
         )
       );
-      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged({
+      await runInspectionCodexReauth({
         account: 'first@example.com',
         fileName: first.name,
         provider: 'codex',
         authIndex: first.authIndex,
+        accountId: 'space-first',
         accountSnapshot: 'first@example.com',
       });
     });
@@ -4970,6 +4987,55 @@ describe('AccountsPage replacement flows', () => {
     expect(getAccountCardText(renderer, getAuthFileSelectionKey(second))).toContain(
       'accounts.health_reauth'
     );
+  });
+
+  it('keeps the health-workspace reauth baseline when credentials refresh during OAuth', async () => {
+    const original = {
+      ...makeCodexFile('codex-old.json', 'auth-1', 'workspace@example.com'),
+      account_id: 'workspace-a',
+      status: 'error',
+      statusMessage: 'token_expired',
+      last_refresh: 1_000,
+      modified: 1_100,
+    } as AuthFileItem;
+    const replacement = {
+      ...makeCodexFile('codex-new.json', 'auth-2', 'workspace@example.com'),
+      account_id: 'workspace-a',
+      status: 'ready',
+      statusMessage: '',
+      last_refresh: 3_000,
+      modified: 3_100,
+    } as AuthFileItem;
+    const target: CodexReauthTarget = {
+      account: 'workspace@example.com',
+      fileName: original.name,
+      provider: 'codex',
+      authIndex: original.authIndex,
+      accountId: 'workspace-a',
+      accountSnapshot: 'workspace@example.com',
+    };
+    mocks.files = [original];
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
+    });
+    expect(mocks.lastHealthWorkspaceProps?.onCodexReauthStart?.(target)).toBe(true);
+
+    mocks.loadFiles.mockImplementationOnce(async () => {
+      mocks.files = [replacement];
+      return mocks.files;
+    });
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged();
+    });
+
+    mocks.loadFiles.mockImplementationOnce(async () => mocks.files);
+    await act(async () => {
+      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged(target);
+    });
+
+    expect(listPendingAccountDirectReauths('http://cpa-a.local:8317:manager-key')).toEqual([]);
   });
 
   it('invalidates only the refreshed credential inside a shared physical file', async () => {
@@ -6120,10 +6186,14 @@ describe('AccountsPage replacement flows', () => {
   it('does not reattach filename-only inspection evidence after reauth or capability rechecks', async () => {
     const original = {
       ...makeCodexFile('rotated-codex.json', 'auth-before-reauth', 'before@example.com'),
+      account_id: 'space-before',
       last_refresh: 1_000,
       modified: 1_100,
     } as AuthFileItem;
-    const replacement = makeCodexFile(original.name, 'auth-after-reauth', 'after@example.com');
+    const replacement = {
+      ...makeCodexFile(original.name, 'auth-after-reauth', 'after@example.com'),
+      account_id: 'space-after',
+    } as AuthFileItem;
     mocks.files = [original];
     installCodexQuotaStoreMutationMock();
     mocks.quotaState.codexQuota = {
@@ -6188,11 +6258,12 @@ describe('AccountsPage replacement flows', () => {
       findHostButtonByText(renderer, 'accounts.tab_health').props.onClick();
     });
     await act(async () => {
-      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged({
+      await runInspectionCodexReauth({
         account: 'before@example.com',
         fileName: original.name,
         provider: 'codex',
         authIndex: original.authIndex,
+        accountId: 'space-before',
         accountSnapshot: 'before@example.com',
       });
     });
@@ -6338,10 +6409,14 @@ describe('AccountsPage replacement flows', () => {
   it('does not reattach filename-only inspection evidence when a shared file becomes singular after reauth', async () => {
     const first = {
       ...makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com'),
+      account_id: 'space-first',
       last_refresh: 1_000,
       modified: 1_100,
     } as AuthFileItem;
-    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    const second = {
+      ...makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com'),
+      account_id: 'space-second',
+    } as AuthFileItem;
     mocks.files = [first, second];
     const renderer = await renderAccountsPage();
 
@@ -6372,11 +6447,12 @@ describe('AccountsPage replacement flows', () => {
           2_000
         )
       );
-      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged({
+      await runInspectionCodexReauth({
         account: 'first@example.com',
         fileName: first.name,
         provider: 'codex',
         authIndex: first.authIndex,
+        accountId: 'space-first',
         accountSnapshot: 'first@example.com',
       });
     });
@@ -6399,10 +6475,14 @@ describe('AccountsPage replacement flows', () => {
   it('preserves exact sibling evidence when a shared file becomes singular after reauth', async () => {
     const first = {
       ...makeCodexFile('shared-codex.json', 'auth-1', 'first@example.com'),
+      account_id: 'space-first',
       last_refresh: 1_000,
       modified: 1_100,
     } as AuthFileItem;
-    const second = makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com');
+    const second = {
+      ...makeCodexFile('shared-codex.json', 'auth-2', 'second@example.com'),
+      account_id: 'space-second',
+    } as AuthFileItem;
     const fallbackAtMs = 2_000;
     const inspectionAtMs = 3_000;
     const exactOperationalAtMs = 4_000;
@@ -6494,11 +6574,12 @@ describe('AccountsPage replacement flows', () => {
           inspectionAtMs
         )
       );
-      await mocks.lastHealthWorkspaceProps?.onCredentialsChanged({
+      await runInspectionCodexReauth({
         account: 'first@example.com',
         fileName: first.name,
         provider: 'codex',
         authIndex: first.authIndex,
+        accountId: 'space-first',
         accountSnapshot: 'first@example.com',
       });
     });

@@ -696,6 +696,7 @@ interface ServerCodexInspectionPageProps {
     target?: CodexReauthTarget | null,
     snapshot?: CredentialInspectionSnapshot | null
   ) => void | Promise<void>;
+  onCodexReauthStart?: (target: CodexReauthTarget) => boolean | void;
   onOpenCredential?: (target: CredentialInspectionTarget) => void;
 }
 
@@ -704,6 +705,7 @@ export function ServerCodexInspectionPage({
   modeControl,
   onSnapshotChange,
   onCredentialsChanged,
+  onCodexReauthStart,
   onOpenCredential,
 }: ServerCodexInspectionPageProps = {}) {
   const { t, i18n } = useTranslation();
@@ -1609,7 +1611,7 @@ export function ServerCodexInspectionPage({
         navigate('/oauth#oauth-provider-xai');
         return;
       }
-      setCodexReauthTarget({
+      const target: CodexReauthTarget = {
         account: item.displayAccount || item.accountId || item.fileName,
         fileName: item.fileName,
         runtimeId: item.runtimeId ?? null,
@@ -1617,9 +1619,11 @@ export function ServerCodexInspectionPage({
         authIndex: item.authIndex ?? null,
         accountId: item.accountId ?? null,
         accountSnapshot: item.accountSnapshot ?? null,
-      });
+      };
+      if (onCodexReauthStart?.(target) === false) return;
+      setCodexReauthTarget(target);
     },
-    [navigate]
+    [navigate, onCodexReauthStart]
   );
 
   const handleDeleteServerReauth = useCallback(

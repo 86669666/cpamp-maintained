@@ -34,7 +34,7 @@ For all agents. Shared approval semantics: `/Users/seakee/.codex/prompt-policy.m
 
 | Path | Purpose |
 |---|---|
-| `apps/web/` | React 19 + Vite management panel; root npm scripts forward here |
+| `apps/web/` | React 19 + Vite management panel; root Bun scripts forward here |
 | `apps/manager-server/` | Go 1.24 backend, `modernc.org/sqlite`, no CGO, embeds built panel |
 | `tests/` | repo Vitest tests for architecture/source integrity |
 | `docs/`, `img/` | user docs, migration notes, README assets |
@@ -48,16 +48,16 @@ Release outputs: Docker images, native Linux/macOS/Windows packages for amd64/ar
 
 | Task | Command |
 |---|---|
-| install | `npm install` |
-| dev/build/preview | `npm run dev` / `npm run build` / `npm run preview` |
-| type/lint/format | `npm run type-check` / `npm run lint` / `npm run format` |
-| web + repo tests | `npm run test` |
-| backend tests | `npm run manager-server:test` |
+| install | `bun install --frozen-lockfile` |
+| dev/build/preview | `bun run dev` / `bun run build` / `bun run preview` |
+| type/lint/format | `bun run type-check` / `bun run lint` / `bun run format` |
+| web + repo tests | `bun run test` |
+| backend tests | `bun run manager-server:test` |
 | backend run | `cd apps/manager-server && go run ./cmd/cpa-manager-plus` |
 | backend race | `cd apps/manager-server && go test -race ./...` |
 | manager stack | `docker compose -f docker-compose.manager.yml up --build` |
 
-Focused tests: `npm --workspace apps/web run test -- <path>` or `cd apps/manager-server && go test -run TestName ./internal/...`. If `origin/main...HEAD` is missing for `repoSourceIntegrity`, set `CPA_MANAGER_CHANGED_FILES_BASE`.
+Focused tests: `bun run --cwd apps/web test -- <path>` or `cd apps/manager-server && go test -run TestName ./internal/...`. If `origin/main...HEAD` is missing for `repoSourceIntegrity`, set `CPA_MANAGER_CHANGED_FILES_BASE`.
 
 ## Architecture
 
@@ -110,9 +110,9 @@ components -> entities / services / stores / hooks / utils
 
 | Change | Verify |
 |---|---|
-| frontend behavior | `npm run type-check`, `npm run lint`, `npm run test` |
-| frontend build/single-file | add `npm run build` |
-| backend behavior | `npm run manager-server:test` |
+| frontend behavior | `bun run type-check`, `bun run lint`, `bun run test` |
+| frontend build/single-file | add `bun run build` |
+| backend behavior | `bun run manager-server:test` |
 | backend concurrency/worker/collector | add `cd apps/manager-server && go test -race ./...` |
 | auth/setup/proxy/collector/monitoring | cover Full Docker and CPA Panel semantics |
 | packaging/Docker | verify relevant release or Docker build path |

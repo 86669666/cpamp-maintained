@@ -23,7 +23,18 @@ const makeRow = (overrides: Partial<AccountRow>): AccountRow =>
 
 describe('accountWindowUsageRows', () => {
   it('builds window-scoped targets from account rows and valid window ranges', () => {
-    const row = makeRow({ provider: 'codex', projectId: 'project-1' });
+    const row = makeRow({
+      provider: 'codex',
+      projectId: 'unsafe-generic-project',
+      raw: {
+        name: 'codex.json',
+        provider: 'codex',
+        authIndex: 'auth-1',
+        account: 'codex@example.com',
+        label: 'Codex Seat',
+        account_id: 'account-1',
+      },
+    });
     const entries = buildAccountWindowUsageTargetEntries(
       [row],
       new Map([
@@ -54,11 +65,22 @@ describe('accountWindowUsageRows', () => {
         auth_label_snapshot: 'Codex Seat',
         auth_file_snapshot: 'codex.json',
         auth_provider_snapshot: 'codex',
-        auth_project_id_snapshot: 'project-1',
+        auth_account_id_snapshot: 'account-1',
+        auth_project_id_snapshot: undefined,
         auth_index: 'auth-1',
         source: 'codex.json',
       },
     });
+  });
+
+  it('does not treat generic Codex project ids as trusted account ids', () => {
+    const row = makeRow({ provider: 'codex', projectId: 'unsafe-generic-project' });
+    const [entry] = buildAccountWindowUsageTargetEntries(
+      [row],
+      new Map([[row.selectionKey, [{ key: '5h', fromMs: 1000, toMs: 2000 }]]])
+    );
+
+    expect(entry?.target.auth_project_id_snapshot).toBeUndefined();
   });
 
   it('skips weak legacy identities without dropping valid rows from the batch', () => {

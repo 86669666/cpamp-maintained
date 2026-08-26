@@ -190,6 +190,8 @@ export interface UsageDetail {
   authFileSnapshot?: string;
   auth_provider_snapshot?: string;
   authProviderSnapshot?: string;
+  auth_account_id_snapshot?: string;
+  authAccountIdSnapshot?: string;
   auth_project_id_snapshot?: string;
   authProjectIdSnapshot?: string;
   auth_snapshot_at_ms?: number;
@@ -891,6 +893,9 @@ export function collectUsageDetails(usageData: unknown): UsageDetail[] {
           auth_provider_snapshot: readDetailString(
             detailRaw.auth_provider_snapshot ?? detailRaw.authProviderSnapshot
           ),
+          auth_account_id_snapshot: readDetailString(
+            detailRaw.auth_account_id_snapshot ?? detailRaw.authAccountIdSnapshot
+          ),
           auth_project_id_snapshot: readDetailString(
             detailRaw.auth_project_id_snapshot ?? detailRaw.authProjectIdSnapshot
           ),
@@ -1022,6 +1027,9 @@ export function collectUsageDetailsWithEndpoint(usageData: unknown): UsageDetail
           ),
           auth_provider_snapshot: readDetailString(
             detailRaw.auth_provider_snapshot ?? detailRaw.authProviderSnapshot
+          ),
+          auth_account_id_snapshot: readDetailString(
+            detailRaw.auth_account_id_snapshot ?? detailRaw.authAccountIdSnapshot
           ),
           auth_project_id_snapshot: readDetailString(
             detailRaw.auth_project_id_snapshot ?? detailRaw.authProjectIdSnapshot

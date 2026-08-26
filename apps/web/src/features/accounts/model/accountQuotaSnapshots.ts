@@ -49,6 +49,7 @@ const toSnapshotTarget = (
   auth_label_snapshot: target.auth_label_snapshot,
   auth_file_snapshot: target.auth_file_snapshot,
   auth_provider_snapshot: target.auth_provider_snapshot ?? row.provider,
+  auth_account_id_snapshot: target.auth_account_id_snapshot,
   auth_project_id_snapshot: target.auth_project_id_snapshot,
   auth_index: target.auth_index,
   source: target.source,

@@ -161,25 +161,26 @@ type HeatmapPoint struct {
 type ChannelModelStat struct {
 	usage.LongContextTokens
 	usage.PricingBand
-	AuthIndex            string
-	Source               string
-	AccountSnapshot      string
-	AuthLabelSnapshot    string
-	AuthProviderSnapshot string
-	Model                string
-	BillingModel         string
-	ServiceTier          string
-	Calls                int64
-	SuccessCalls         int64
-	FailureCalls         int64
-	InputTokens          int64
-	OutputTokens         int64
-	CachedTokens         int64
-	CacheReadTokens      int64
-	CacheCreationTokens  int64
-	TotalTokens          int64
-	AvgLatencyMS         sql.NullFloat64
-	LatencySamples       int64
+	AuthIndex             string
+	Source                string
+	AccountSnapshot       string
+	AuthLabelSnapshot     string
+	AuthProviderSnapshot  string
+	AuthAccountIDSnapshot string
+	Model                 string
+	BillingModel          string
+	ServiceTier           string
+	Calls                 int64
+	SuccessCalls          int64
+	FailureCalls          int64
+	InputTokens           int64
+	OutputTokens          int64
+	CachedTokens          int64
+	CacheReadTokens       int64
+	CacheCreationTokens   int64
+	TotalTokens           int64
+	AvgLatencyMS          sql.NullFloat64
+	LatencySamples        int64
 }
 
 type FailureSourceStat struct {
@@ -201,6 +202,7 @@ type AccountModelStat struct {
 	AccountSnapshot              string
 	AuthLabelSnapshot            string
 	AuthProviderSnapshot         string
+	AuthAccountIDSnapshot        string
 	Provider                     string
 	ExplicitAuthProviderSnapshot string
 	AuthIndex                    string
@@ -233,6 +235,7 @@ type AccountWindowUsageQuery struct {
 	AuthLabelSnapshot     string
 	AuthFileSnapshot      string
 	AuthProviderSnapshot  string
+	AuthAccountIDSnapshot string
 	AuthProjectIDSnapshot string
 	Source                string
 	AuthIndex             string
@@ -268,6 +271,7 @@ type CredentialModelStat struct {
 	AccountSnapshot       string
 	AuthLabelSnapshot     string
 	AuthProviderSnapshot  string
+	AuthAccountIDSnapshot string
 	AuthProjectIDSnapshot string
 	Model                 string
 	BillingModel          string
@@ -297,6 +301,7 @@ type CredentialTimelinePoint struct {
 	AccountSnapshot       string
 	AuthLabelSnapshot     string
 	AuthProviderSnapshot  string
+	AuthAccountIDSnapshot string
 	AuthProjectIDSnapshot string
 	BucketMS              int64
 	Model                 string
@@ -341,28 +346,29 @@ type APIKeyTimelinePoint struct {
 type APIKeyModelStat struct {
 	usage.LongContextTokens
 	usage.PricingBand
-	APIKeyHash           string
-	AccountSnapshot      string
-	AuthLabelSnapshot    string
-	AuthProviderSnapshot string
-	AuthIndex            string
-	Source               string
-	SourceHash           string
-	Model                string
-	BillingModel         string
-	ServiceTier          string
-	Calls                int64
-	SuccessCalls         int64
-	FailureCalls         int64
-	InputTokens          int64
-	OutputTokens         int64
-	CachedTokens         int64
-	CacheReadTokens      int64
-	CacheCreationTokens  int64
-	TotalTokens          int64
-	LastSeenMS           int64
-	AvgLatencyMS         sql.NullFloat64
-	LatencySamples       int64
+	APIKeyHash            string
+	AccountSnapshot       string
+	AuthLabelSnapshot     string
+	AuthProviderSnapshot  string
+	AuthAccountIDSnapshot string
+	AuthIndex             string
+	Source                string
+	SourceHash            string
+	Model                 string
+	BillingModel          string
+	ServiceTier           string
+	Calls                 int64
+	SuccessCalls          int64
+	FailureCalls          int64
+	InputTokens           int64
+	OutputTokens          int64
+	CachedTokens          int64
+	CacheReadTokens       int64
+	CacheCreationTokens   int64
+	TotalTokens           int64
+	LastSeenMS            int64
+	AvgLatencyMS          sql.NullFloat64
+	LatencySamples        int64
 }
 
 type TaskBucket struct {
@@ -411,6 +417,7 @@ type EventPageItem struct {
 	AuthLabelSnapshot      string
 	AuthFileSnapshot       string
 	AuthProviderSnapshot   string
+	AuthAccountIDSnapshot  string
 	AuthProjectIDSnapshot  string
 	ReasoningEffort        string
 	ServiceTier            string
@@ -456,6 +463,7 @@ type HeaderSnapshot struct {
 	AccountSnapshot        string
 	AuthLabelSnapshot      string
 	AuthProviderSnapshot   string
+	AuthAccountIDSnapshot  string
 	AuthProjectIDSnapshot  string
 	Source                 string
 	SourceHash             string
@@ -1039,7 +1047,7 @@ func (r *repository) FilterOptionValuesWithFilter(ctx context.Context, filter An
 	if err != nil {
 		return FilterOptionValues{}, err
 	}
-	projectIDs, err := r.distinctFilterValues(ctx, filter, "coalesce(auth_project_id_snapshot, '')")
+	projectIDs, err := r.distinctFilterValues(ctx, filter, usageidentity.SQLProjectIDSnapshotExpression(""))
 	if err != nil {
 		return FilterOptionValues{}, err
 	}
@@ -1383,6 +1391,7 @@ select
 	coalesce(max(account_snapshot), ''),
 	coalesce(max(auth_label_snapshot), ''),
 	coalesce(nullif(max(auth_provider_snapshot), ''), max(provider), ''),
+	coalesce(max(auth_account_id_snapshot), ''),
 	analytics_model_value as model,
 	billing_model_value as billing_model,
 	pricing_model_value,
@@ -1421,6 +1430,7 @@ order by count(*) desc`, args...)
 			&stat.AccountSnapshot,
 			&stat.AuthLabelSnapshot,
 			&stat.AuthProviderSnapshot,
+			&stat.AuthAccountIDSnapshot,
 			&stat.Model,
 			&stat.BillingModel,
 			&stat.PricingModel,
@@ -1503,6 +1513,7 @@ select
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
 	coalesce(max(provider), ''),
 	coalesce(max(auth_provider_snapshot), ''),
+	coalesce(max(auth_account_id_snapshot), ''),
 	coalesce(auth_index, ''),
 	coalesce(max(source), ''),
 	coalesce(source_hash, ''),
@@ -1530,7 +1541,7 @@ select
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
 from banded_usage_events `+where+`
-group by account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+group by account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index, source_hash, analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
 order by max(timestamp_ms) desc, count(*) desc`, args...)
 	if err != nil {
 		return nil, err
@@ -1546,6 +1557,7 @@ order by max(timestamp_ms) desc, count(*) desc`, args...)
 			&stat.AuthProviderSnapshot,
 			&stat.Provider,
 			&stat.ExplicitAuthProviderSnapshot,
+			&stat.AuthAccountIDSnapshot,
 			&stat.AuthIndex,
 			&stat.Source,
 			&stat.SourceHash,
@@ -1586,20 +1598,22 @@ func (r *repository) AccountWindowModelStats(ctx context.Context, windows []Acco
 	}
 
 	values := make([]string, 0, len(windows))
-	args := make([]any, 0, len(windows)*4)
+	args := make([]any, 0, len(windows)*5)
 	for _, window := range windows {
-		values = append(values, "(?, ?, ?, ?)")
+		accountKey, legacyAccountKey := accountWindowQueryKeys(window)
+		values = append(values, "(?, ?, ?, ?, ?)")
 		args = append(
 			args,
 			window.RequestIndex,
 			window.FromMS,
 			window.ToMS,
-			accountWindowQueryKey(window),
+			accountKey,
+			legacyAccountKey,
 		)
 	}
 
 	rows, err := r.db.QueryContext(ctx, pricingBandedUsageEventsCTE+`, window_targets(
-	request_index, from_ms, to_ms, account_key
+	request_index, from_ms, to_ms, account_key, legacy_account_key
 ) as (
 	values `+strings.Join(values, ",")+`
 )
@@ -1629,7 +1643,7 @@ from window_targets w
 	join banded_usage_events e
 		on e.timestamp_ms >= w.from_ms
 		and e.timestamp_ms < w.to_ms
-		and `+usageidentity.SQLAccountKeyExpression("e")+` = w.account_key
+		and `+usageidentity.SQLAccountKeyExpression("e")+` in (w.account_key, w.legacy_account_key)
 	group by w.request_index, e.analytics_model_value, billing_model, e.pricing_model_value, e.context_threshold_tokens_value, coalesce(e.service_tier, '')
 order by w.request_index, max(e.timestamp_ms) desc`, args...)
 	if err != nil {
@@ -1678,12 +1692,32 @@ func accountWindowQueryKey(window AccountWindowUsageQuery) string {
 		AuthFileSnapshot:      window.AuthFileSnapshot,
 		AuthIndex:             window.AuthIndex,
 		AuthProviderSnapshot:  window.AuthProviderSnapshot,
+		AuthAccountIDSnapshot: window.AuthAccountIDSnapshot,
 		AuthProjectIDSnapshot: window.AuthProjectIDSnapshot,
 		AccountSnapshot:       window.AccountSnapshot,
 		AuthLabelSnapshot:     window.AuthLabelSnapshot,
 		Source:                window.Source,
 	})
 	return key
+}
+
+func accountWindowQueryKeys(window AccountWindowUsageQuery) (string, string) {
+	accountKey := accountWindowQueryKey(window)
+	legacyAccountKey := accountKey
+	provider := strings.TrimSpace(strings.ToLower(strings.ReplaceAll(window.AuthProviderSnapshot, "_", "-")))
+	if provider == "codex" && (strings.TrimSpace(window.AuthAccountIDSnapshot) != "" || usageidentity.CodexAccountIDFromSnapshot(window.AuthProjectIDSnapshot) != "") {
+		if key, valid := usageidentity.LegacyAccountKey(usageidentity.Fields{
+			AuthFileSnapshot:     window.AuthFileSnapshot,
+			AuthIndex:            window.AuthIndex,
+			AuthProviderSnapshot: window.AuthProviderSnapshot,
+			AccountSnapshot:      window.AccountSnapshot,
+			AuthLabelSnapshot:    window.AuthLabelSnapshot,
+			Source:               window.Source,
+		}); valid {
+			legacyAccountKey = key
+		}
+	}
+	return accountKey, legacyAccountKey
 }
 
 func (r *repository) CredentialModelStatsWithFilter(ctx context.Context, filter AnalyticsFilter) ([]CredentialModelStat, error) {
@@ -1698,6 +1732,7 @@ select
 	coalesce(max(account_snapshot), ''),
 	coalesce(max(auth_label_snapshot), ''),
 	coalesce(nullif(max(auth_provider_snapshot), ''), max(provider), ''),
+	coalesce(max(auth_account_id_snapshot), ''),
 	coalesce(max(auth_project_id_snapshot), ''),
 	analytics_model_value as model,
 	billing_model_value as billing_model,
@@ -1741,6 +1776,7 @@ order by max(timestamp_ms) desc, count(*) desc`, args...)
 			&stat.AccountSnapshot,
 			&stat.AuthLabelSnapshot,
 			&stat.AuthProviderSnapshot,
+			&stat.AuthAccountIDSnapshot,
 			&stat.AuthProjectIDSnapshot,
 			&stat.Model,
 			&stat.BillingModel,
@@ -1767,6 +1803,10 @@ order by max(timestamp_ms) desc, count(*) desc`, args...)
 		); err != nil {
 			return nil, err
 		}
+		stat.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(
+			stat.AuthProviderSnapshot,
+			stat.AuthProjectIDSnapshot,
+		)
 		stats = append(stats, stat)
 	}
 	return stats, rows.Err()
@@ -1821,6 +1861,7 @@ select
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+	coalesce(auth_account_id_snapshot, ''),
 	coalesce(auth_project_id_snapshot, ''),
 		analytics_model_value as model,
 	billing_model_value as billing_model,
@@ -1874,6 +1915,7 @@ from banded_usage_events %s
 			&point.AccountSnapshot,
 			&point.AuthLabelSnapshot,
 			&point.AuthProviderSnapshot,
+			&point.AuthAccountIDSnapshot,
 			&point.AuthProjectIDSnapshot,
 			&point.Model,
 			&point.BillingModel,
@@ -1892,6 +1934,10 @@ from banded_usage_events %s
 		); err != nil {
 			return nil, err
 		}
+		point.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(
+			point.AuthProviderSnapshot,
+			point.AuthProjectIDSnapshot,
+		)
 		bucketMS := usage.AnalyticsBucketMS(timestampMS, granularity, location)
 		mapKey := key{
 			id:                     point.ID,
@@ -1917,6 +1963,7 @@ from banded_usage_events %s
 				AccountSnapshot:       point.AccountSnapshot,
 				AuthLabelSnapshot:     point.AuthLabelSnapshot,
 				AuthProviderSnapshot:  point.AuthProviderSnapshot,
+				AuthAccountIDSnapshot: point.AuthAccountIDSnapshot,
 				AuthProjectIDSnapshot: point.AuthProjectIDSnapshot,
 				BucketMS:              bucketMS,
 				Model:                 point.Model,
@@ -1992,6 +2039,7 @@ func (r *repository) credentialTimelineHourlyWithFilter(ctx context.Context, fil
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+	coalesce(auth_account_id_snapshot, ''),
 	coalesce(auth_project_id_snapshot, ''),
 		analytics_model_value as model,
 	billing_model_value as billing_model,
@@ -2020,6 +2068,7 @@ group by ` + bucketExpr + `, credential_id,
 	coalesce(auth_file_snapshot, ''), coalesce(auth_index, ''), coalesce(source, ''), coalesce(source_hash, ''),
 	coalesce(account_snapshot, ''), coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''), coalesce(auth_project_id_snapshot, ''),
+	coalesce(auth_account_id_snapshot, ''),
 		analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, service_tier
 	order by min(timestamp_ms), credential_id, analytics_model_value`
 	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
@@ -2041,6 +2090,7 @@ group by ` + bucketExpr + `, credential_id,
 			&point.AccountSnapshot,
 			&point.AuthLabelSnapshot,
 			&point.AuthProviderSnapshot,
+			&point.AuthAccountIDSnapshot,
 			&point.AuthProjectIDSnapshot,
 			&point.Model,
 			&point.BillingModel,
@@ -2067,6 +2117,10 @@ group by ` + bucketExpr + `, credential_id,
 		); err != nil {
 			return nil, err
 		}
+		point.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(
+			point.AuthProviderSnapshot,
+			point.AuthProjectIDSnapshot,
+		)
 		points = append(points, point)
 	}
 	return points, rows.Err()
@@ -2159,6 +2213,9 @@ func mergeCredentialTimelineParts(parts [][]CredentialTimelinePoint) []Credentia
 			if entry.AuthProviderSnapshot == "" {
 				entry.AuthProviderSnapshot = point.AuthProviderSnapshot
 			}
+			if entry.AuthAccountIDSnapshot == "" {
+				entry.AuthAccountIDSnapshot = point.AuthAccountIDSnapshot
+			}
 			if entry.AuthProjectIDSnapshot == "" {
 				entry.AuthProjectIDSnapshot = point.AuthProjectIDSnapshot
 			}
@@ -2200,6 +2257,7 @@ select
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+	coalesce(max(auth_account_id_snapshot), ''),
 	coalesce(auth_index, ''),
 	coalesce(max(source), ''),
 	coalesce(source_hash, ''),
@@ -2226,7 +2284,7 @@ select
 	avg(nullif(latency_ms, 0)),
 	count(nullif(latency_ms, 0))
 from banded_usage_events `+where+`
-group by api_key_hash, account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_index, source_hash, analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
+group by api_key_hash, account_snapshot, auth_label_snapshot, coalesce(nullif(auth_provider_snapshot, ''), provider, ''), auth_account_id_snapshot, auth_index, source_hash, analytics_model_value, billing_model, pricing_model_value, context_threshold_tokens_value, coalesce(service_tier, '')
 order by max(timestamp_ms) desc, count(*) desc`, args...)
 	if err != nil {
 		return nil, err
@@ -2241,6 +2299,7 @@ order by max(timestamp_ms) desc, count(*) desc`, args...)
 			&stat.AccountSnapshot,
 			&stat.AuthLabelSnapshot,
 			&stat.AuthProviderSnapshot,
+			&stat.AuthAccountIDSnapshot,
 			&stat.AuthIndex,
 			&stat.Source,
 			&stat.SourceHash,
@@ -2355,6 +2414,7 @@ func (r *repository) RecentFailuresWithFilter(ctx context.Context, filter Analyt
 	coalesce(account_snapshot, ''),
 	coalesce(auth_label_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+	coalesce(auth_account_id_snapshot, ''),
 	coalesce(auth_project_id_snapshot, ''),
 	fail_status_code,
 	coalesce(fail_summary, ''),
@@ -2390,6 +2450,7 @@ limit ?`, args...)
 			&failure.AccountSnapshot,
 			&failure.AuthLabelSnapshot,
 			&failure.AuthProviderSnapshot,
+			&failure.AuthAccountIDSnapshot,
 			&failure.AuthProjectIDSnapshot,
 			&failure.FailStatusCode,
 			&failure.FailSummary,
@@ -2404,6 +2465,7 @@ limit ?`, args...)
 			return nil, err
 		}
 		failure.ResponseMetadata = usage.ResponseHeaderMetadataFromJSON(responseMetadataJSON)
+		failure.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(failure.AuthProviderSnapshot, failure.AuthProjectIDSnapshot)
 		failures = append(failures, failure)
 	}
 	return failures, rows.Err()
@@ -2465,6 +2527,7 @@ func (r *repository) EventsPageWithFilter(ctx context.Context, filter AnalyticsF
 	coalesce(auth_label_snapshot, ''),
 	coalesce(auth_file_snapshot, ''),
 	coalesce(nullif(auth_provider_snapshot, ''), provider, ''),
+	coalesce(auth_account_id_snapshot, ''),
 	coalesce(auth_project_id_snapshot, ''),
 	coalesce(reasoning_effort, ''),
 	coalesce(service_tier, ''),
@@ -2525,6 +2588,7 @@ limit ?`, args...)
 			&item.AuthLabelSnapshot,
 			&item.AuthFileSnapshot,
 			&item.AuthProviderSnapshot,
+			&item.AuthAccountIDSnapshot,
 			&item.AuthProjectIDSnapshot,
 			&item.ReasoningEffort,
 			&item.ServiceTier,
@@ -2552,6 +2616,7 @@ limit ?`, args...)
 			return EventsPage{}, err
 		}
 		item.Failed = failed != 0
+		item.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(item.AuthProviderSnapshot, item.AuthProjectIDSnapshot)
 		item.ResponseMetadata = usage.ResponseHeaderMetadataFromJSON(responseMetadataJSON)
 		items = append(items, item)
 	}
@@ -2591,6 +2656,7 @@ func (r *repository) LatestHeaderSnapshots(ctx context.Context, sinceMS int64, l
 		coalesce(account_snapshot, '') as account_snapshot,
 		coalesce(auth_label_snapshot, '') as auth_label_snapshot,
 		coalesce(nullif(auth_provider_snapshot, ''), provider, '') as auth_provider_snapshot,
+		coalesce(auth_account_id_snapshot, '') as auth_account_id_snapshot,
 		coalesce(auth_project_id_snapshot, '') as auth_project_id_snapshot,
 		coalesce(source, '') as source,
 		coalesce(source_hash, '') as source_hash,
@@ -2643,6 +2709,7 @@ select
 	account_snapshot,
 	auth_label_snapshot,
 	auth_provider_snapshot,
+	auth_account_id_snapshot,
 	auth_project_id_snapshot,
 	source,
 	source_hash,
@@ -2679,6 +2746,7 @@ limit ?`, sinceMS, limit)
 			&item.AccountSnapshot,
 			&item.AuthLabelSnapshot,
 			&item.AuthProviderSnapshot,
+			&item.AuthAccountIDSnapshot,
 			&item.AuthProjectIDSnapshot,
 			&item.Source,
 			&item.SourceHash,
@@ -2693,6 +2761,7 @@ limit ?`, sinceMS, limit)
 			return nil, err
 		}
 		item.ResponseMetadata = usage.ResponseHeaderMetadataFromJSON(responseMetadataJSON)
+		item.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(item.AuthProviderSnapshot, item.AuthProjectIDSnapshot)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -2791,7 +2860,7 @@ func analyticsWhere(filter AnalyticsFilter) (string, []any) {
 	addInCondition("auth_index", filter.AuthIndices)
 	addInCondition("api_key_hash", filter.APIKeyHashes)
 	addInCondition("source_hash", filter.SourceHashes)
-	addInCondition("auth_project_id_snapshot", filter.ProjectIDs)
+	addInCondition(usageidentity.SQLProjectIDSnapshotExpression(""), filter.ProjectIDs)
 	addInCondition("executor_type", filter.RequestTypes)
 	addInCondition("header_error_kind", filter.HeaderErrorKinds)
 	addInCondition("header_error_code", filter.HeaderErrorCodes)

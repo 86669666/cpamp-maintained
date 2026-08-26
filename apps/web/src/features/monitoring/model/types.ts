@@ -169,6 +169,7 @@ export type MonitoringEventRow = {
   authIndexMasked: string;
   authLabel: string;
   authLabelIdentity?: string;
+  accountId?: string;
   projectId: string;
   apiKeyHash: string;
   apiKeyLabel: string;
@@ -377,6 +378,7 @@ export interface MonitoringScopeFilters {
 export interface UseMonitoringDataParams {
   usage?: unknown;
   config: Config | null | undefined;
+  connectionScopeKey?: string | null;
   modelPrices: Record<string, ModelPrice>;
   apiKeyAliases?: ApiKeyAlias[];
   timeRange: MonitoringTimeRange;
@@ -391,7 +393,9 @@ export interface UseMonitoringDataReturn {
   loading: boolean;
   error: string;
   authFiles: AuthFileItem[];
+  authFilesLoaded: boolean;
   channels: MonitoringChannelMeta[];
+  channelsLoaded: boolean;
   summary: MonitoringSummary;
   metadata: MonitoringMetadata;
   statusChips: MonitoringStatusChip[];
@@ -416,12 +420,14 @@ export interface UseMonitoringDataReturn {
   lastRefreshedAt: Date | null;
   isTransitioningScope: boolean;
   hasPresentationSnapshot: boolean;
-  refreshMeta: (showLoading?: boolean) => Promise<void>;
+  refreshMeta: (showLoading?: boolean) => Promise<MonitoringMetaPayload | null>;
   loadMoreEvents: () => void;
 }
 
 export type MonitoringMetaPayload = {
   authFiles: AuthFileItem[];
+  authFilesLoaded: boolean;
   channels: MonitoringChannelMeta[];
+  channelsLoaded: boolean;
   error: string;
 };

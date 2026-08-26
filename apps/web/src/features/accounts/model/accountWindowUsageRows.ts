@@ -64,6 +64,7 @@ type AccountWindowCredentialTarget = Pick<
   | 'auth_label_snapshot'
   | 'auth_file_snapshot'
   | 'auth_provider_snapshot'
+  | 'auth_account_id_snapshot'
   | 'auth_project_id_snapshot'
   | 'auth_index'
   | 'source'
@@ -78,7 +79,11 @@ const hasCredentialIdentity = (target: AccountWindowCredentialTarget): boolean =
   if (authFile || (source && source !== account && source !== label)) return Boolean(provider);
   if (!provider) return false;
   return Boolean(
-    target.auth_index?.trim() || target.auth_project_id_snapshot?.trim() || account || label
+    target.auth_index?.trim() ||
+    target.auth_account_id_snapshot?.trim() ||
+    target.auth_project_id_snapshot?.trim() ||
+    account ||
+    label
   );
 };
 
@@ -146,6 +151,7 @@ export const buildAccountWindowUsageTargetEntries = (
             auth_label_snapshot: accountTarget.auth_label_snapshot,
             auth_file_snapshot: accountTarget.auth_file_snapshot,
             auth_provider_snapshot: accountTarget.auth_provider_snapshot,
+            auth_account_id_snapshot: accountTarget.auth_account_id_snapshot,
             auth_project_id_snapshot: accountTarget.auth_project_id_snapshot,
             auth_index: accountTarget.auth_index,
             source: accountTarget.source,

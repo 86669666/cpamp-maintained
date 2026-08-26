@@ -941,6 +941,48 @@ func TestQuotaAutoDisableCandidateUsesResponseHeaderReset(t *testing.T) {
 	}
 }
 
+func TestQuotaAutoDisableCandidateUsesNormalizedHeaderMetadataWithoutFailBodyHeaders(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	payload := fmt.Sprintf(`{
+		"timestamp": %q,
+		"failed": true,
+		"fail": {"status_code": 429, "body": "rate limit exceeded"},
+		"provider": "codex",
+		"model": "gpt-5.4",
+		"endpoint": "POST /v1/chat/completions",
+		"auth_file_snapshot": "codex-auth.json",
+		"auth_index": "auth-1",
+		"account_snapshot": "user@example.com",
+		"response_headers": {
+			"x-codex-rate-limit-reached-type": ["primary"],
+			"x-codex-primary-used-percent": ["100"],
+			"x-codex-primary-reset-after-seconds": ["300"],
+			"x-codex-primary-window-minutes": ["300"]
+		}
+	}`, now.UTC().Format(time.RFC3339Nano))
+	event, err := usage.NormalizeRaw([]byte(payload))
+	if err != nil {
+		t.Fatalf("normalize header-only quota event: %v", err)
+	}
+	if event.FailBody != "rate limit exceeded" || strings.Contains(event.FailBody, "x-codex") {
+		t.Fatalf("fail body = %q", event.FailBody)
+	}
+	if event.ResponseMetadata == nil || event.ResponseMetadata.Quota == nil {
+		t.Fatalf("response metadata = %#v", event.ResponseMetadata)
+	}
+
+	// Isolate the structured path: historical raw/failure fallbacks are covered
+	// separately and must not be required for newly normalized events.
+	event.RawJSON = ""
+	candidate, ok := quotaAutoDisableCandidateFromEvent(event, "http://cpa", "key", now)
+	if !ok {
+		t.Fatal("candidate not detected from structured response metadata")
+	}
+	if got := candidate.ResetAt.Unix(); got != now.Add(5*time.Minute).Unix() {
+		t.Fatalf("reset unix = %d", got)
+	}
+}
+
 func TestQuotaAutoDisableCandidateUsesReachedWindowResetWithoutReachedType(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	event := usage.Event{
@@ -1819,9 +1861,25 @@ func TestRateLimitAutoDisableWorkerRecoversDueCooldownFromManagerRuntimeConfigAf
 
 	waitForWorkerTest(t, func() bool {
 		mu.Lock()
-		defer mu.Unlock()
-		return patches == 1 && !disabled
+		patched := patches == 1 && !disabled
+		mu.Unlock()
+		if !patched {
+			return false
+		}
+		active, err := st.QuotaCooldowns.ListActive(ctx)
+		return err == nil && len(active) == 0
 	})
+
+	mu.Lock()
+	gotPatches := patches
+	gotDisabled := disabled
+	mu.Unlock()
+	if gotPatches != 1 {
+		t.Fatalf("patches = %d, want 1", gotPatches)
+	}
+	if gotDisabled {
+		t.Fatal("credential remained disabled after cooldown recovery")
+	}
 
 	active, err := st.QuotaCooldowns.ListActive(ctx)
 	if err != nil {

@@ -1,0 +1,13 @@
+🚀 <b>CPA Manager Plus v1.12.5 Maintained 1</b>
+
+✨ <b>更新内容</b>
+
+• 同步上游 v1.12.5：修复 Codex 账号身份连续性、OAuth 重新登录同步和 Monitoring 刷新一致性。
+• 新增 <code>auth_account_id_snapshot</code>，从不可变 usage events 重建受影响的派生数据。
+• 保留 CPA Management Key 只写边界与特权代理 IP Header 隔离，避免浏览器路径命中上游 IP ban。
+
+🔒 <b>生产边界</b>
+
+• 插件硬禁、本地转换工具、Bun-only Release 链继续生效。
+• 账号自动操作、自动禁用和 quota cooldown 继续保持关闭。
+• 上线前执行 SQLite 在线一致性备份与恢复校验。

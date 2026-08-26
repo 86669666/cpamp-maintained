@@ -33,6 +33,19 @@ import {
   normalizeAnalyticsModel,
 } from '@/utils/usage';
 
+const CODEX_ACCOUNT_ID_SNAPSHOT_PREFIX = 'codex-account-id:v1:';
+const projectIdForDisplay = (provider: unknown, projectId: unknown): string | undefined => {
+  const value = typeof projectId === 'string' ? projectId.trim() : '';
+  const normalizedProvider = typeof provider === 'string' ? provider.trim().toLowerCase() : '';
+  if (
+    normalizedProvider.replace(/_/g, '-') === 'codex' &&
+    value.startsWith(CODEX_ACCOUNT_ID_SNAPSHOT_PREFIX)
+  ) {
+    return undefined;
+  }
+  return value || undefined;
+};
+
 export type UsageAnalyticsTab =
   | 'overview'
   | 'trends'
@@ -1497,7 +1510,7 @@ export const buildCredentialRows = (
         source: row.source,
         sourceHash: row.source_hash,
         account: display.account || row.account_snapshot || row.auth_label_snapshot,
-        projectId: row.auth_project_id_snapshot,
+        projectId: projectIdForDisplay(row.auth_provider_snapshot, row.auth_project_id_snapshot),
         requestCount: toNumber(row.calls),
         successCount: toNumber(row.success_calls),
         failureCount: toNumber(row.failure_calls),

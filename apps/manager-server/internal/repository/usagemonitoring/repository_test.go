@@ -3,6 +3,7 @@ package usagemonitoring_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -132,6 +133,48 @@ func TestMigrationCreatesUsageMonitoringRollupSchema(t *testing.T) {
 		if !strings.Contains(definition, expression) || !strings.Contains(definition, "trim(auth_index)") {
 			t.Fatalf("account daily window index %s definition = %q", indexName, definition)
 		}
+	}
+}
+
+func TestStatsRollupSeparatesSuccessfulAndFailedEvents(t *testing.T) {
+	sqlDB, db := newMonitoringRepositoryStore(t)
+	ctx := context.Background()
+	timestampMS := int64(1_800_057_600_000)
+	success := monitoringRepositoryEvent("same-dim-success", timestampMS, "gpt-5.6", "key-a", "account-a", "auth-a", "source-a", false, 10, 2, 25)
+	failure := monitoringRepositoryEvent("same-dim-failure", timestampMS, "gpt-5.6", "key-a", "account-a", "auth-a", "source-a", true, 10, 2, 25)
+	success.AuthAccountIDSnapshot = "codex-account-a"
+	failure.AuthAccountIDSnapshot = "codex-account-a"
+	if _, err := db.InsertEvents(ctx, []usage.Event{success, failure}); err != nil {
+		t.Fatalf("insert mixed outcome events: %v", err)
+	}
+	result, err := db.CatchUpUsageMonitoringStats(ctx, 100, timestampMS+1)
+	if err != nil {
+		t.Fatalf("catch up monitoring stats: %v", err)
+	}
+	if result.Pending {
+		t.Fatalf("monitoring stats unexpectedly pending: %#v", result)
+	}
+	rows, err := sqlDB.Query(`select failed, calls
+		from usage_monitoring_account_daily_rollups_v1
+		where auth_account_id_snapshot = ? order by failed`, "codex-account-a")
+	if err != nil {
+		t.Fatalf("query account outcome rollups: %v", err)
+	}
+	defer rows.Close()
+	got := map[int]int64{}
+	for rows.Next() {
+		var failed int
+		var calls int64
+		if err := rows.Scan(&failed, &calls); err != nil {
+			t.Fatalf("scan account outcome rollup: %v", err)
+		}
+		got[failed] = calls
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read account outcome rollups: %v", err)
+	}
+	if got[0] != 1 || got[1] != 1 || len(got) != 2 {
+		t.Fatalf("account outcome rollups = %#v, want one success and one failure", got)
 	}
 }
 
@@ -335,6 +378,7 @@ func TestAccountWindowProjectionMatchesRawAcrossCoverageTailAndIdentity(t *testi
 	first.AuthFileSnapshot = "first.json"
 	otherCredential := monitoringRepositoryEvent("window-other-credential", fromMS+1_000, "gpt-window", "key-b", "shared@example.com", "auth-shared", "source-b", false, 9_000, 9_000, 10)
 	otherCredential.AuthFileSnapshot = "second.json"
+	otherCredential.AuthProjectIDSnapshot = "project-b"
 	toBoundary := monitoringRepositoryEvent("window-to-boundary", toMS, "gpt-window", "key-a", "shared@example.com", "auth-shared", "source-a", false, 8_000, 8_000, 10)
 	toBoundary.AuthFileSnapshot = "first.json"
 	if _, err := db.InsertEvents(ctx, []usage.Event{first, otherCredential, toBoundary}); err != nil {
@@ -342,10 +386,11 @@ func TestAccountWindowProjectionMatchesRawAcrossCoverageTailAndIdentity(t *testi
 	}
 	catchUpMonitoringRepository(t, ctx, db)
 	expectedAccountKey, valid := usageidentity.AccountKey(usageidentity.Fields{
-		AuthFileSnapshot:     "first.json",
-		AuthIndex:            "auth-shared",
-		AuthProviderSnapshot: "codex",
-		AccountSnapshot:      "shared@example.com",
+		AuthFileSnapshot:      "first.json",
+		AuthIndex:             "auth-shared",
+		AuthProviderSnapshot:  "codex",
+		AuthProjectIDSnapshot: "project-a",
+		AccountSnapshot:       "shared@example.com",
 	})
 	if !valid {
 		t.Fatal("invalid expected account key")
@@ -417,6 +462,103 @@ func TestAccountWindowProjectionMatchesRawAcrossCoverageTailAndIdentity(t *testi
 	}
 }
 
+func TestCodexAccountWindowKeepsHistoryAcrossSameAccountReauth(t *testing.T) {
+	_, db := newMonitoringRepositoryStore(t)
+	ctx := context.Background()
+	dayStartMS := int64(1_800_057_600_000)
+	previousFromMS := dayStartMS
+	currentFromMS := dayStartMS + testDayMS
+	toMS := currentFromMS + testDayMS
+
+	makeEvent := func(hash string, timestampMS int64, file, authIndex, accountID string, input int64) usage.Event {
+		event := monitoringRepositoryEvent(
+			hash,
+			timestampMS,
+			"gpt-window",
+			"key-a",
+			"same@example.com",
+			authIndex,
+			file,
+			false,
+			input,
+			input/10,
+			10,
+		)
+		event.AuthFileSnapshot = file
+		event.AuthIndex = authIndex
+		event.AuthAccountIDSnapshot = accountID
+		return event
+	}
+
+	projectedEvents := []usage.Event{
+		makeEvent("previous-old-credential", previousFromMS+1_000, "codex-a-free.json", "auth-1", "account-a", 10),
+		makeEvent("previous-new-credential", previousFromMS+2_000, "codex-a-pro.json", "auth-2", "account-a", 20),
+		makeEvent("current-old-credential", currentFromMS+1_000, "codex-a-free.json", "auth-1", "account-a", 30),
+		makeEvent("different-space-same-email", currentFromMS+2_000, "codex-b.json", "auth-3", "account-b", 9_000),
+	}
+	legacyCurrentCredential := makeEvent("current-new-credential-before-account-snapshot", currentFromMS+2_500, "codex-a-pro.json", "auth-2", "", 5)
+	projectedEvents = append(projectedEvents, legacyCurrentCredential)
+	if _, err := db.InsertEvents(ctx, projectedEvents); err != nil {
+		t.Fatalf("insert projected reauth events: %v", err)
+	}
+	catchUpMonitoringRepository(t, ctx, db)
+
+	windows := []store.AccountWindowUsageQuery{
+		{
+			RequestIndex:          0,
+			FromMS:                currentFromMS,
+			ToMS:                  toMS,
+			AccountSnapshot:       "same@example.com",
+			AuthFileSnapshot:      "codex-a-pro.json",
+			AuthProviderSnapshot:  "codex",
+			AuthAccountIDSnapshot: "account-a",
+			AuthIndex:             "auth-2",
+			Source:                "codex-a-pro.json",
+		},
+		{
+			RequestIndex:          1,
+			FromMS:                previousFromMS,
+			ToMS:                  currentFromMS,
+			AccountSnapshot:       "same@example.com",
+			AuthFileSnapshot:      "codex-a-pro.json",
+			AuthProviderSnapshot:  "codex",
+			AuthAccountIDSnapshot: "account-a",
+			AuthIndex:             "auth-2",
+			Source:                "codex-a-pro.json",
+		},
+	}
+	assertStats := func(phase string, currentCalls, currentInput int64) {
+		t.Helper()
+		raw, err := db.AccountWindowModelStats(ctx, windows)
+		if err != nil {
+			t.Fatalf("%s raw window stats: %v", phase, err)
+		}
+		projected, _, available, err := db.UsageMonitoringAccountWindowStats(ctx, windows)
+		if err != nil || !available {
+			t.Fatalf("%s projected window stats: available=%v err=%v", phase, available, err)
+		}
+		if !reflect.DeepEqual(projected, raw) {
+			t.Fatalf("%s projection/raw mismatch\nprojection=%#v\nraw=%#v", phase, projected, raw)
+		}
+		if len(projected) != 2 {
+			t.Fatalf("%s stats = %#v, want current and previous", phase, projected)
+		}
+		if projected[0].RequestIndex != 0 || projected[0].Calls != currentCalls || projected[0].InputTokens != currentInput {
+			t.Fatalf("%s current stats = %#v", phase, projected[0])
+		}
+		if projected[1].RequestIndex != 1 || projected[1].Calls != 2 || projected[1].InputTokens != 30 {
+			t.Fatalf("%s previous stats = %#v", phase, projected[1])
+		}
+	}
+
+	assertStats("projection complete with daily rollup available", 2, 35)
+	rawTail := makeEvent("current-new-credential-tail", currentFromMS+3_000, "codex-a-pro.json", "auth-2", "account-a", 40)
+	if _, err := db.InsertEvents(ctx, []usage.Event{rawTail}); err != nil {
+		t.Fatalf("insert raw reauth tail: %v", err)
+	}
+	assertStats("projection plus raw tail", 3, 75)
+}
+
 func TestAccountWindowProjectionUsesDailyStatsWithEdgesAndRawTail(t *testing.T) {
 	sqlDB, db := newMonitoringRepositoryStore(t)
 	ctx := context.Background()
@@ -434,6 +576,7 @@ func TestAccountWindowProjectionUsesDailyStatsWithEdgesAndRawTail(t *testing.T) 
 	for index := range events {
 		events[index].AuthFileSnapshot = events[index].Source
 		events[index].AuthProviderSnapshot = "codex"
+		events[index].AuthProjectIDSnapshot = ""
 	}
 	if _, err := db.InsertEvents(ctx, events); err != nil {
 		t.Fatalf("insert daily account window events: %v", err)
@@ -463,6 +606,7 @@ func TestAccountWindowProjectionUsesDailyStatsWithEdgesAndRawTail(t *testing.T) 
 	)
 	tail.AuthFileSnapshot = "daily.json"
 	tail.AuthProviderSnapshot = "codex"
+	tail.AuthProjectIDSnapshot = ""
 	if _, err := db.InsertEvents(ctx, []usage.Event{tail}); err != nil {
 		t.Fatalf("insert daily account window raw tail: %v", err)
 	}
@@ -558,6 +702,117 @@ func TestUsageMonitoringSearchIndexTracksProjectionInsertUpdateAndDelete(t *test
 	if got := countSearchEvents("updated-marker"); got != 0 {
 		t.Fatalf("deleted search count = %d, want 0", got)
 	}
+}
+
+func TestUsageMonitoringSearchDoesNotIndexHistoricalCodexProjectMarker(t *testing.T) {
+	_, db := newMonitoringRepositoryStore(t)
+	ctx := context.Background()
+	baseMS := int64(1_800_057_600_000)
+	marker := usageidentity.CodexAccountIDSnapshot("historical-account")
+	event := monitoringRepositoryEvent(
+		"search-legacy-codex-marker",
+		baseMS+1_000,
+		"gpt-search",
+		"key-search",
+		"search@example.com",
+		"auth-search",
+		"source-search",
+		false,
+		10,
+		2,
+		0,
+	)
+	event.AuthProjectIDSnapshot = marker
+	if _, err := db.InsertEvents(ctx, []usage.Event{event}); err != nil {
+		t.Fatalf("insert legacy Codex search event: %v", err)
+	}
+	catchUpMonitoringRepository(t, ctx, db)
+
+	count, _, available, err := db.UsageMonitoringEventsCount(ctx, store.AnalyticsFilter{
+		FromMS:        baseMS,
+		ToMS:          baseMS + testDayMS,
+		SearchQuery:   marker,
+		IncludeFailed: true,
+	})
+	if err != nil || !available {
+		t.Fatalf("projected marker search count: count=%d available=%v err=%v", count, available, err)
+	}
+	if count != 0 {
+		t.Fatalf("projected marker search count = %d, want 0", count)
+	}
+
+	// Leave the next event outside the projection coverage so the raw tail
+	// search path is exercised as well.
+	tail := event
+	tail.EventHash = "search-legacy-codex-marker-tail"
+	tail.TimestampMS = baseMS + 2_000
+	tail.Timestamp = time.UnixMilli(tail.TimestampMS).UTC().Format(time.RFC3339Nano)
+	if _, err := db.InsertEvents(ctx, []usage.Event{tail}); err != nil {
+		t.Fatalf("insert raw-tail Codex search event: %v", err)
+	}
+	count, _, available, err = db.UsageMonitoringEventsCount(ctx, store.AnalyticsFilter{
+		FromMS:        baseMS,
+		ToMS:          baseMS + testDayMS,
+		SearchQuery:   marker,
+		IncludeFailed: true,
+	})
+	if err != nil || !available {
+		t.Fatalf("raw-tail marker search count: count=%d available=%v err=%v", count, available, err)
+	}
+	if count != 0 {
+		t.Fatalf("raw-tail marker search count = %d, want 0", count)
+	}
+}
+func TestSuccessfulResponseHeadersDoNotEnterFailureSearchStorage(t *testing.T) {
+	sqlDB, db := newMonitoringRepositoryStore(t)
+	ctx := context.Background()
+	marker := strings.Repeat("unindexed-success-header-marker-", 128)
+	payload, err := json.Marshal(map[string]any{
+		"timestamp": "2026-04-25T00:00:00Z",
+		"failed":    false,
+		"provider":  "openai",
+		"model":     "gpt-5.4",
+		"endpoint":  "POST /v1/chat/completions",
+		"tokens":    map[string]any{"input_tokens": 1, "total_tokens": 1},
+		"response_headers": map[string]any{
+			"Content-Type":                 []any{"application/json"},
+			"X-CPAMP-Unindexed-Diagnostic": []any{marker},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal successful event: %v", err)
+	}
+	event, err := usage.NormalizeRaw(payload)
+	if err != nil {
+		t.Fatalf("normalize successful event: %v", err)
+	}
+	if _, err := db.InsertEvents(ctx, []usage.Event{event}); err != nil {
+		t.Fatalf("insert successful event: %v", err)
+	}
+
+	var eventID int64
+	var failBody, failSummary, metadataJSON, rawJSON string
+	if err := sqlDB.QueryRowContext(ctx, `select id, coalesce(fail_body, ''), coalesce(fail_summary, ''),
+		coalesce(response_metadata_json, ''), coalesce(raw_json, '')
+		from usage_events where event_hash = ?`, event.EventHash).Scan(&eventID, &failBody, &failSummary, &metadataJSON, &rawJSON); err != nil {
+		t.Fatalf("read persisted successful event: %v", err)
+	}
+	if failBody != "" || failSummary != "" {
+		t.Fatalf("persisted failure fields = body:%q summary:%q", failBody, failSummary)
+	}
+	if !strings.Contains(metadataJSON, "application/json") || !strings.Contains(rawJSON, marker) {
+		t.Fatalf("persisted metadata/raw json missing: metadata=%q rawHasMarker=%v", metadataJSON, strings.Contains(rawJSON, marker))
+	}
+
+	catchUpMonitoringRepository(t, ctx, db)
+	var searchText string
+	if err := sqlDB.QueryRowContext(ctx, `select search_text from usage_monitoring_event_projection_v1 where event_id = ?`, eventID).Scan(&searchText); err != nil {
+		t.Fatalf("read successful event projection: %v", err)
+	}
+	if strings.Contains(searchText, marker) {
+		t.Fatalf("projection search text contains response header marker")
+	}
+	assertSearchIndexCount(t, ctx, sqlDB, marker, 0)
 }
 
 func TestMigrationBackfillsSearchIndexForExistingProjection(t *testing.T) {

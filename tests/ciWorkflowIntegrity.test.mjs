@@ -106,7 +106,7 @@ describe('GitHub Actions workflow integrity', () => {
       'git fetch --force https://github.com/seakee/CPA-Manager-Plus.git'
     );
     expect(buildJob).toContain(
-      'test "$(git rev-list -n 1 v1.12.4)" = "931d771344fdd5d95db5ae0adb87259eca133adc"'
+      'test "$(git rev-list -n 1 v1.12.5)" = "b1179618bad2740ae6d441be9b1b1b800379cfc3"'
     );
     expect(buildJob).toContain('scripts/build-maintained-lightweight.sh');
     expect(workflow).toContain('prerelease="$(bun - "${release_tag}"');
@@ -128,8 +128,9 @@ describe('GitHub Actions workflow integrity', () => {
     expect(buildJob).not.toContain('sha256sum release-notes.md >> SHA256SUMS');
     expect(buildJob).not.toContain('cp apps/web/dist/index.html dist/release/management.html');
 
-    expect(buildJob).not.toContain('actions/upload-artifact@');
-    expect(buildJob).not.toContain('actions/download-artifact@');
+    expect(workflow).not.toContain('actions/download-artifact');
+    expect(workflow).not.toContain('actions/upload-artifact');
+    expect(buildJob).toContain('overwrite_files: false');
     expect(buildJob).toContain("if: env.DRY_RUN != 'true'");
     expect(buildJob).toContain('test -s dist/release/metadata.json');
     expect(buildJob).toContain('test -s dist/release/SOURCE_COMMIT');

@@ -59,11 +59,11 @@ func (r *repository) LoadFilterOptions(ctx context.Context, filter AnalyticsFilt
 		filter,
 		state.CoverageEventID,
 		`coalesce(nullif(p.auth_provider_snapshot, ''), nullif(p.provider, ''), '') as provider,
-		p.auth_file_snapshot, p.auth_project_id_snapshot, p.executor_type,
+		p.auth_file_snapshot, `+usageidentity.SQLProjectIDSnapshotExpression("p.")+` as auth_project_id_snapshot, p.executor_type,
 		p.header_error_kind, p.header_error_code, p.header_quota_plan_type,
 		p.header_trace_id`,
 		`coalesce(nullif(e.auth_provider_snapshot, ''), nullif(e.provider, ''), ''),
-		coalesce(e.auth_file_snapshot, ''), coalesce(e.auth_project_id_snapshot, ''),
+		coalesce(e.auth_file_snapshot, ''), `+usageidentity.SQLProjectIDSnapshotExpression("e.")+`,
 		coalesce(e.executor_type, ''), coalesce(e.header_error_kind, ''),
 		coalesce(e.header_error_code, ''), coalesce(e.header_quota_plan_type, ''),
 		coalesce(e.header_trace_id, '')`,
@@ -421,7 +421,7 @@ func mergeStoredHeaderRows(ctx context.Context, tx *sql.Tx, sinceMS int64, limit
 		coalesce(usage_event.requested_model, ''), coalesce(usage_event.resolved_model, ''),
 		stored.auth_file_snapshot,
 		stored.auth_index, stored.account_snapshot, stored.auth_label_snapshot,
-		stored.auth_provider_snapshot, stored.auth_project_id_snapshot, stored.source, stored.source_hash,
+		stored.auth_provider_snapshot, stored.auth_account_id_snapshot, stored.auth_project_id_snapshot, stored.source, stored.source_hash,
 		stored.response_metadata_json, stored.header_quota_recover_at_ms,
 		stored.header_quota_used_percent, stored.header_quota_plan_type, stored.header_error_kind,
 		stored.header_error_code, stored.header_trace_id
@@ -452,6 +452,7 @@ func mergeRawHeaderRows(ctx context.Context, tx *sql.Tx, sinceMS, afterID int64,
 			coalesce(account_snapshot, '') as account_snapshot,
 			coalesce(auth_label_snapshot, '') as auth_label_snapshot,
 			coalesce(nullif(auth_provider_snapshot, ''), provider, '') as auth_provider_snapshot,
+			coalesce(auth_account_id_snapshot, '') as auth_account_id_snapshot,
 			coalesce(auth_project_id_snapshot, '') as auth_project_id_snapshot,
 			coalesce(source, '') as source,
 			coalesce(source_hash, '') as source_hash,
@@ -491,7 +492,7 @@ func mergeRawHeaderRows(ctx context.Context, tx *sql.Tx, sinceMS, afterID int64,
 		model, analytics_model, requested_model, resolved_model,
 		auth_file_snapshot,
 		auth_index, account_snapshot, auth_label_snapshot,
-		auth_provider_snapshot, auth_project_id_snapshot, source, source_hash,
+		auth_provider_snapshot, auth_account_id_snapshot, auth_project_id_snapshot, source, source_hash,
 		response_metadata_json, header_quota_recover_at_ms,
 		header_quota_used_percent, header_quota_plan_type, header_error_kind,
 		header_error_code, header_trace_id
@@ -524,6 +525,7 @@ func scanHeaderRows(rows *sql.Rows, grouped map[string]headerRow) error {
 			&row.Item.AccountSnapshot,
 			&row.Item.AuthLabelSnapshot,
 			&row.Item.AuthProviderSnapshot,
+			&row.Item.AuthAccountIDSnapshot,
 			&row.Item.AuthProjectIDSnapshot,
 			&row.Item.Source,
 			&row.Item.SourceHash,
@@ -538,6 +540,7 @@ func scanHeaderRows(rows *sql.Rows, grouped map[string]headerRow) error {
 			return err
 		}
 		row.Item.ResponseMetadata = usage.ResponseHeaderMetadataFromJSON(responseMetadataJSON)
+		row.Item.AuthProjectIDSnapshot = usageidentity.ProjectIDSnapshot(row.Item.AuthProviderSnapshot, row.Item.AuthProjectIDSnapshot)
 		current, ok := grouped[row.SnapshotKey]
 		if !ok || headerSnapshotNewer(row.Item, current.Item) {
 			grouped[row.SnapshotKey] = row

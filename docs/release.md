@@ -207,12 +207,14 @@ native packages with publishing disabled, while skipping GitHub Release and
 Telegram delivery.
 
 Release jobs share a non-canceling `release-publish` concurrency group, so two
-tags cannot publish concurrently. Assets are uploaded as an Actions artifact
-and reused by the GitHub Release job, which prevents a second build from
-silently producing a different release payload. This private maintained fork
-does not publish container images from its Release workflow: it must not write
-to the upstream `seakee` DockerHub or GHCR namespaces. Container publishing, if
-introduced later, requires an explicitly owned namespace and a separate review.
+tags cannot publish concurrently. The single `build_release_assets` job builds,
+inspects, and verifies the exact payload, then publishes those same local files
+directly to GitHub Release with overwrite disabled. There is no intermediate
+Actions artifact or second release build that could silently produce a
+different payload. This private maintained fork does not publish container
+images from its Release workflow: it must not write to the upstream `seakee`
+DockerHub or GHCR namespaces. Container publishing, if introduced later,
+requires an explicitly owned namespace and a separate review.
 
 Telegram delivery is deliberately non-blocking after the GitHub Release is
 created. The job summary records `sent`, `skipped-config`,

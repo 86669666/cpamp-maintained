@@ -52,6 +52,7 @@ type AccountTarget struct {
 	AuthLabelSnapshot     string `json:"auth_label_snapshot,omitempty"`
 	AuthFileSnapshot      string `json:"auth_file_snapshot,omitempty"`
 	AuthProviderSnapshot  string `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot string `json:"auth_account_id_snapshot,omitempty"`
 	AuthProjectIDSnapshot string `json:"auth_project_id_snapshot,omitempty"`
 	AuthIndex             string `json:"auth_index,omitempty"`
 	Source                string `json:"source,omitempty"`
@@ -1277,6 +1278,7 @@ func (target AccountTarget) identityFields(provider string) usageidentity.Fields
 		AuthFileSnapshot:      strings.TrimSpace(target.AuthFileSnapshot),
 		AuthIndex:             strings.TrimSpace(target.AuthIndex),
 		AuthProviderSnapshot:  providerSnapshot,
+		AuthAccountIDSnapshot: strings.TrimSpace(target.AuthAccountIDSnapshot),
 		AuthProjectIDSnapshot: strings.TrimSpace(target.AuthProjectIDSnapshot),
 		AccountSnapshot:       strings.TrimSpace(target.AccountSnapshot),
 		AuthLabelSnapshot:     strings.TrimSpace(target.AuthLabelSnapshot),

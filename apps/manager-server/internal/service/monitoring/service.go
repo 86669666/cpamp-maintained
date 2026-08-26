@@ -234,6 +234,7 @@ type AccountHistoryTarget struct {
 	AuthLabelSnapshot     string `json:"auth_label_snapshot,omitempty"`
 	AuthFileSnapshot      string `json:"auth_file_snapshot,omitempty"`
 	AuthProviderSnapshot  string `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot string `json:"auth_account_id_snapshot,omitempty"`
 	AuthProjectIDSnapshot string `json:"auth_project_id_snapshot,omitempty"`
 	AuthIndex             string `json:"auth_index,omitempty"`
 	Source                string `json:"source,omitempty"`
@@ -301,6 +302,7 @@ type AccountWindowUsageTarget struct {
 	AuthLabelSnapshot     string                  `json:"auth_label_snapshot,omitempty"`
 	AuthFileSnapshot      string                  `json:"auth_file_snapshot,omitempty"`
 	AuthProviderSnapshot  string                  `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot string                  `json:"auth_account_id_snapshot,omitempty"`
 	AuthProjectIDSnapshot string                  `json:"auth_project_id_snapshot,omitempty"`
 	AuthIndex             string                  `json:"auth_index,omitempty"`
 	Source                string                  `json:"source,omitempty"`
@@ -324,7 +326,7 @@ func (target *AccountWindowUsageTarget) UnmarshalJSON(data []byte) error {
 		"request_key": {}, "row_key": {}, "window_key": {}, "provider_window_id": {},
 		"period": {}, "from_ms": {}, "to_ms": {}, "model_scope": {},
 		"account_snapshot": {}, "auth_label_snapshot": {}, "auth_file_snapshot": {},
-		"auth_provider_snapshot": {}, "auth_project_id_snapshot": {}, "auth_index": {},
+		"auth_provider_snapshot": {}, "auth_account_id_snapshot": {}, "auth_project_id_snapshot": {}, "auth_index": {},
 		"source": {},
 	}
 	for field := range fields {
@@ -532,17 +534,18 @@ type ModelStat struct {
 }
 
 type ChannelShareRow struct {
-	AuthIndex            string   `json:"auth_index"`
-	Source               string   `json:"source,omitempty"`
-	AccountSnapshot      string   `json:"account_snapshot,omitempty"`
-	AuthLabelSnapshot    string   `json:"auth_label_snapshot,omitempty"`
-	AuthProviderSnapshot string   `json:"auth_provider_snapshot,omitempty"`
-	Calls                int64    `json:"calls"`
-	Success              int64    `json:"success"`
-	Failure              int64    `json:"failure"`
-	Tokens               int64    `json:"tokens"`
-	Cost                 float64  `json:"cost"`
-	AvgLatencyMS         *float64 `json:"average_latency_ms"`
+	AuthIndex             string   `json:"auth_index"`
+	Source                string   `json:"source,omitempty"`
+	AccountSnapshot       string   `json:"account_snapshot,omitempty"`
+	AuthLabelSnapshot     string   `json:"auth_label_snapshot,omitempty"`
+	AuthProviderSnapshot  string   `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot string   `json:"auth_account_id_snapshot,omitempty"`
+	Calls                 int64    `json:"calls"`
+	Success               int64    `json:"success"`
+	Failure               int64    `json:"failure"`
+	Tokens                int64    `json:"tokens"`
+	Cost                  float64  `json:"cost"`
+	AvgLatencyMS          *float64 `json:"average_latency_ms"`
 }
 
 type FailureSourceRow struct {
@@ -591,6 +594,7 @@ type CredentialStatRow struct {
 	AccountSnapshot       string                `json:"account_snapshot,omitempty"`
 	AuthLabelSnapshot     string                `json:"auth_label_snapshot,omitempty"`
 	AuthProviderSnapshot  string                `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot string                `json:"auth_account_id_snapshot,omitempty"`
 	AuthProjectIDSnapshot string                `json:"auth_project_id_snapshot,omitempty"`
 	Calls                 int64                 `json:"calls"`
 	SuccessCalls          int64                 `json:"success_calls"`
@@ -618,6 +622,7 @@ type CredentialTimelinePoint struct {
 	AccountSnapshot       string   `json:"account_snapshot,omitempty"`
 	AuthLabelSnapshot     string   `json:"auth_label_snapshot,omitempty"`
 	AuthProviderSnapshot  string   `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot string   `json:"auth_account_id_snapshot,omitempty"`
 	AuthProjectIDSnapshot string   `json:"auth_project_id_snapshot,omitempty"`
 	BucketMS              int64    `json:"bucket_ms"`
 	BucketLabel           string   `json:"bucket_label"`
@@ -775,6 +780,7 @@ type RecentFailure struct {
 	AccountSnapshot        string                        `json:"account_snapshot,omitempty"`
 	AuthLabelSnapshot      string                        `json:"auth_label_snapshot,omitempty"`
 	AuthProviderSnapshot   string                        `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot  string                        `json:"auth_account_id_snapshot,omitempty"`
 	AuthProjectIDSnapshot  string                        `json:"auth_project_id_snapshot,omitempty"`
 	Endpoint               string                        `json:"endpoint"`
 	DurationMS             *int64                        `json:"duration_ms"`
@@ -801,6 +807,7 @@ type HeaderSnapshot struct {
 	AccountSnapshot        string                        `json:"account_snapshot,omitempty"`
 	AuthLabelSnapshot      string                        `json:"auth_label_snapshot,omitempty"`
 	AuthProviderSnapshot   string                        `json:"auth_provider_snapshot,omitempty"`
+	AuthAccountIDSnapshot  string                        `json:"auth_account_id_snapshot,omitempty"`
 	AuthProjectIDSnapshot  string                        `json:"auth_project_id_snapshot,omitempty"`
 	Source                 string                        `json:"source,omitempty"`
 	SourceHash             string                        `json:"source_hash,omitempty"`
@@ -843,6 +850,7 @@ type EventRow struct {
 	AuthLabelSnapshot      string                        `json:"auth_label_snapshot"`
 	AuthFileSnapshot       string                        `json:"auth_file_snapshot,omitempty"`
 	AuthProviderSnapshot   string                        `json:"auth_provider_snapshot"`
+	AuthAccountIDSnapshot  string                        `json:"auth_account_id_snapshot,omitempty"`
 	AuthProjectIDSnapshot  string                        `json:"auth_project_id_snapshot,omitempty"`
 	ReasoningEffort        string                        `json:"reasoning_effort,omitempty"`
 	ServiceTier            string                        `json:"service_tier,omitempty"`
@@ -1579,6 +1587,7 @@ func (s *Service) accountWindowUsage(ctx context.Context, req AccountWindowUsage
 			AuthLabelSnapshot:     window.AuthLabelSnapshot,
 			AuthFileSnapshot:      window.AuthFileSnapshot,
 			AuthProviderSnapshot:  window.AuthProviderSnapshot,
+			AuthAccountIDSnapshot: window.AuthAccountIDSnapshot,
 			AuthProjectIDSnapshot: window.AuthProjectIDSnapshot,
 			Source:                window.Source,
 			AuthIndex:             window.AuthIndex,
@@ -1908,6 +1917,9 @@ func channelModelStatsFromAccountStats(stats []store.AccountModelStat) []store.C
 		}
 		if stat.AuthLabelSnapshot > entry.row.AuthLabelSnapshot {
 			entry.row.AuthLabelSnapshot = stat.AuthLabelSnapshot
+		}
+		if stat.AuthAccountIDSnapshot > entry.row.AuthAccountIDSnapshot {
+			entry.row.AuthAccountIDSnapshot = stat.AuthAccountIDSnapshot
 		}
 		if stat.Provider > entry.provider {
 			entry.provider = stat.Provider
@@ -2750,6 +2762,7 @@ func buildCredentialStats(stats []store.CredentialModelStat, prices map[string]s
 					AccountSnapshot:       stat.AccountSnapshot,
 					AuthLabelSnapshot:     stat.AuthLabelSnapshot,
 					AuthProviderSnapshot:  stat.AuthProviderSnapshot,
+					AuthAccountIDSnapshot: stat.AuthAccountIDSnapshot,
 					AuthProjectIDSnapshot: stat.AuthProjectIDSnapshot,
 				},
 				models: map[string]*AccountModelStatRow{},
@@ -2837,6 +2850,7 @@ func buildCredentialTimeline(points []store.CredentialTimelinePoint, granularity
 					AccountSnapshot:       point.AccountSnapshot,
 					AuthLabelSnapshot:     point.AuthLabelSnapshot,
 					AuthProviderSnapshot:  point.AuthProviderSnapshot,
+					AuthAccountIDSnapshot: point.AuthAccountIDSnapshot,
 					AuthProjectIDSnapshot: point.AuthProjectIDSnapshot,
 					BucketMS:              point.BucketMS,
 					BucketLabel:           timelineLabel(point.BucketMS, granularity, location),
@@ -3036,6 +3050,9 @@ func fillChannelShareSnapshots(row *ChannelShareRow, stat store.ChannelModelStat
 	if row.AuthProviderSnapshot == "" {
 		row.AuthProviderSnapshot = stat.AuthProviderSnapshot
 	}
+	if row.AuthAccountIDSnapshot == "" {
+		row.AuthAccountIDSnapshot = stat.AuthAccountIDSnapshot
+	}
 }
 
 type monitoringAccountIdentity struct {
@@ -3220,6 +3237,9 @@ func fillCredentialTimelineSnapshots(row *CredentialTimelinePoint, point store.C
 	}
 	if row.AuthProviderSnapshot == "" {
 		row.AuthProviderSnapshot = point.AuthProviderSnapshot
+	}
+	if row.AuthAccountIDSnapshot == "" {
+		row.AuthAccountIDSnapshot = point.AuthAccountIDSnapshot
 	}
 	if row.AuthProjectIDSnapshot == "" {
 		row.AuthProjectIDSnapshot = point.AuthProjectIDSnapshot
@@ -3457,6 +3477,7 @@ func buildRecentFailures(failures []store.RecentFailure) []RecentFailure {
 			AccountSnapshot:        failure.AccountSnapshot,
 			AuthLabelSnapshot:      failure.AuthLabelSnapshot,
 			AuthProviderSnapshot:   failure.AuthProviderSnapshot,
+			AuthAccountIDSnapshot:  failure.AuthAccountIDSnapshot,
 			AuthProjectIDSnapshot:  failure.AuthProjectIDSnapshot,
 			Endpoint:               failure.Endpoint,
 			DurationMS:             nullableInt(failure.LatencyMS.Valid, failure.LatencyMS.Int64),
@@ -3499,6 +3520,7 @@ func buildEvents(page store.EventsPage, totalCount int64) *EventsResponse {
 			AuthLabelSnapshot:      item.AuthLabelSnapshot,
 			AuthFileSnapshot:       item.AuthFileSnapshot,
 			AuthProviderSnapshot:   item.AuthProviderSnapshot,
+			AuthAccountIDSnapshot:  item.AuthAccountIDSnapshot,
 			AuthProjectIDSnapshot:  item.AuthProjectIDSnapshot,
 			ReasoningEffort:        item.ReasoningEffort,
 			ServiceTier:            item.ServiceTier,
@@ -3542,6 +3564,7 @@ func buildHeaderSnapshots(items []store.HeaderSnapshot) []HeaderSnapshot {
 			AccountSnapshot:        item.AccountSnapshot,
 			AuthLabelSnapshot:      item.AuthLabelSnapshot,
 			AuthProviderSnapshot:   item.AuthProviderSnapshot,
+			AuthAccountIDSnapshot:  item.AuthAccountIDSnapshot,
 			AuthProjectIDSnapshot:  item.AuthProjectIDSnapshot,
 			Source:                 item.Source,
 			SourceHash:             item.SourceHash,
@@ -3575,6 +3598,7 @@ func accountHistoryTargetKey(target AccountHistoryTarget) (string, bool) {
 		AuthFileSnapshot:      target.AuthFileSnapshot,
 		AuthIndex:             target.AuthIndex,
 		AuthProviderSnapshot:  target.AuthProviderSnapshot,
+		AuthAccountIDSnapshot: target.AuthAccountIDSnapshot,
 		AuthProjectIDSnapshot: target.AuthProjectIDSnapshot,
 		AccountSnapshot:       target.AccountSnapshot,
 		AuthLabelSnapshot:     target.AuthLabelSnapshot,
@@ -3705,6 +3729,7 @@ func accountWindowUsageTargetKey(target AccountWindowUsageTarget) (string, bool)
 		AuthFileSnapshot:      target.AuthFileSnapshot,
 		AuthIndex:             target.AuthIndex,
 		AuthProviderSnapshot:  target.AuthProviderSnapshot,
+		AuthAccountIDSnapshot: target.AuthAccountIDSnapshot,
 		AuthProjectIDSnapshot: target.AuthProjectIDSnapshot,
 		AccountSnapshot:       target.AccountSnapshot,
 		AuthLabelSnapshot:     target.AuthLabelSnapshot,
@@ -3745,6 +3770,7 @@ func AccountWindowUsageTargetHasCredentialIdentity(target AccountWindowUsageTarg
 		return false
 	}
 	return strings.TrimSpace(target.AuthIndex) != "" ||
+		strings.TrimSpace(target.AuthAccountIDSnapshot) != "" ||
 		strings.TrimSpace(target.AuthProjectIDSnapshot) != "" ||
 		account != "" || label != ""
 }

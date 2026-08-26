@@ -22,7 +22,7 @@ Operate providers, credentials, OAuth, plugins, and configuration while keeping 
 
 ## Maintained Lightweight Variant
 
-This maintained lightweight variant stays based on upstream CPA Manager Plus `v1.12.4` (`931d771344fdd5d95db5ae0adb87259eca133adc`). Plugin UI capability follows the server-provided `X-CPA-Support-Plugin` header; when unsupported, plugin management and plugin-related visual configuration controls remain hidden. The bundled CPA ↔ sub2api tool processes files and pasted JSON only inside the current browser tab, without network requests or persistence. Upstream CPA Manager Plus remains attributed and distributed under its MIT License, and the adapted CPA2sub2API tool retains its own bundled MIT notice.
+This maintained lightweight variant stays based on upstream CPA Manager Plus `v1.12.5` (`b1179618bad2740ae6d441be9b1b1b800379cfc3`). Plugin UI capability follows the server-provided `X-CPA-Support-Plugin` header; when unsupported, plugin management and plugin-related visual configuration controls remain hidden. The bundled CPA ↔ sub2api tool processes files and pasted JSON only inside the current browser tab, without network requests or persistence. Upstream CPA Manager Plus remains attributed and distributed under its MIT License, and the adapted CPA2sub2API tool retains its own bundled MIT notice.
 
 ## What Can CPAMP Help You Answer?
 
@@ -208,13 +208,13 @@ Recommended CPA version: `v7.1.39+`. The HTTP usage queue needs `v6.10.8+`.
 ## Development
 
 ```bash
-npm install
-npm run dev
-npm run type-check
-npm run lint
-npm run test
-npm run build
-npm run docs:build
+bun install --frozen-lockfile
+bun run dev
+bun run type-check
+bun run lint
+bun run test
+bun run build
+bun run docs:build
 ```
 
 Manager Server:
@@ -235,11 +235,11 @@ docker compose -f docker-compose.manager.yml up --build
 
 ## Release
 
-- `npm run build` creates a single-file `apps/web/dist/index.html`.
+- `bun run build` creates a single-file `apps/web/dist/index.html`.
 - `bin/release/package-native.sh` embeds the panel into native packages.
 - Create release notes through `release/<version> -> dev -> main`, then push a
   strict `vX.Y.Z` or prerelease tag from the verified `main` promotion merge.
-- `npm run release:validate -- --tag <tag> --content-only` checks the three
+- `bun run release:validate -- --tag <tag> --content-only` checks the three
   required release files before a tag is created.
 - `.github/workflows/release.yml` offers a `workflow_dispatch` dry-run from
   `main`; it validates and builds without publishing a GitHub Release,

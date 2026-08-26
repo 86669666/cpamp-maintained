@@ -58,7 +58,7 @@ func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision string, a
 	query := monitoringBandedEventsCTE("e.id > ? and e.id <= ?") + fmt.Sprintf(`
 	insert into usage_monitoring_account_daily_rollups_v1 (
 		structure_revision, bucket_ms, account_snapshot, auth_label_snapshot,
-		provider, auth_provider_snapshot, auth_index, source, source_hash,
+		provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index, source, source_hash,
 		auth_file_snapshot, api_key_hash, executor_type, model, billing_model,
 			pricing_model, service_tier, context_threshold_tokens, failed, calls,
 			input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens,
@@ -74,6 +74,7 @@ func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision string, a
 		coalesce(auth_label_snapshot, ''),
 		coalesce(provider, ''),
 		coalesce(auth_provider_snapshot, ''),
+		coalesce(auth_account_id_snapshot, ''),
 		coalesce(auth_index, ''),
 		coalesce(source, ''),
 		coalesce(source_hash, ''),
@@ -105,10 +106,10 @@ func upsertAccountDailyBatch(ctx context.Context, tx *sql.Tx, revision string, a
 		max(timestamp_ms),
 		?
 	from banded_events
-	group by 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+	group by 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
 	on conflict(
 		structure_revision, bucket_ms, account_snapshot, auth_label_snapshot,
-		provider, auth_provider_snapshot, auth_index, source, source_hash,
+		provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index, source, source_hash,
 		auth_file_snapshot, api_key_hash, executor_type, model, billing_model,
 		pricing_model, service_tier, context_threshold_tokens, failed
 	) do update set
@@ -145,7 +146,7 @@ func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision string, af
 	query := monitoringBandedEventsCTE("e.id > ? and e.id <= ?") + fmt.Sprintf(`
 	insert into usage_monitoring_api_key_daily_rollups_v1 (
 		structure_revision, bucket_ms, api_key_hash, account_snapshot,
-		auth_label_snapshot, provider, auth_provider_snapshot, auth_index,
+		auth_label_snapshot, provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index,
 		source, source_hash, auth_file_snapshot, executor_type, model,
 		billing_model, pricing_model, service_tier, context_threshold_tokens,
 			failed, calls, input_tokens, output_tokens, cached_tokens,
@@ -162,6 +163,7 @@ func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision string, af
 		coalesce(auth_label_snapshot, ''),
 		coalesce(provider, ''),
 		coalesce(auth_provider_snapshot, ''),
+		coalesce(auth_account_id_snapshot, ''),
 		coalesce(auth_index, ''),
 		coalesce(source, ''),
 		coalesce(source_hash, ''),
@@ -192,10 +194,10 @@ func upsertAPIKeyDailyBatch(ctx context.Context, tx *sql.Tx, revision string, af
 		max(timestamp_ms),
 		?
 	from banded_events
-	group by 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+	group by 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19
 	on conflict(
 		structure_revision, bucket_ms, api_key_hash, account_snapshot,
-		auth_label_snapshot, provider, auth_provider_snapshot, auth_index,
+		auth_label_snapshot, provider, auth_provider_snapshot, auth_account_id_snapshot, auth_index,
 		source, source_hash, auth_file_snapshot, executor_type, model,
 		billing_model, pricing_model, service_tier, context_threshold_tokens, failed
 	) do update set
