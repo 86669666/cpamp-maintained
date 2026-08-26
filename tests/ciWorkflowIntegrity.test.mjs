@@ -90,7 +90,7 @@ describe('GitHub Actions workflow integrity', () => {
     const preflightJob = jobBlock(workflow, 'preflight');
 
     expect(preflightJob).toContain(
-      'oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2c39'
+      'oven-sh/setup-bun@735343b667d3e6f658f44d0eca948eb6282f2b76'
     );
     expect(preflightJob).toContain('bun-version: 1.3.14');
     expect(preflightJob.indexOf('- name: Setup Bun')).toBeLessThan(
