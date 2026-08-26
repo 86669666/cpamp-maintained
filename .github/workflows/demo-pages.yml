@@ -1,9 +1,6 @@
 name: Demo Site
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:

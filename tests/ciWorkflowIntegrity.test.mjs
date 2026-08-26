@@ -188,6 +188,13 @@ describe('GitHub Actions workflow integrity', () => {
     expect(existsSync(path.join(workflowDir, 'demo-docs-check.yml'))).toBe(false);
   });
 
+  it('keeps GitHub Pages publication explicitly opt-in', () => {
+    const workflow = readWorkflow('demo-pages.yml');
+
+    expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow).not.toMatch(/\n\s*push:/);
+  });
+
   it('keeps the Manager Server image build on the pinned Bun-only toolchain', () => {
     expect(managerServerDockerfile).toContain('oven/bun:1.3.14-alpine');
     expect(managerServerDockerfile).toContain('COPY package.json bun.lock ./');
