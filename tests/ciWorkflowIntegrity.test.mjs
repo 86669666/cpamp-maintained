@@ -76,7 +76,7 @@ describe('GitHub Actions workflow integrity', () => {
 
   it('serializes every publishing stage behind release preflight', () => {
     const workflow = readWorkflow('release.yml');
-    for (const jobName of ['build_release_assets', 'publish_github_release', 'notify_telegram']) {
+    for (const jobName of ['build_release_assets', 'notify_telegram']) {
       const job = jobBlock(workflow, jobName);
       expect(
         /needs:\s*preflight|needs:[\s\S]*?\n\s+- preflight/.test(job),
@@ -101,7 +101,6 @@ describe('GitHub Actions workflow integrity', () => {
   it('publishes the maintained lightweight artifact with complete provenance', () => {
     const workflow = readWorkflow('release.yml');
     const buildJob = jobBlock(workflow, 'build_release_assets');
-    const publishJob = jobBlock(workflow, 'publish_github_release');
 
     expect(buildJob).toContain(
       'git fetch --force https://github.com/seakee/CPA-Manager-Plus.git'
@@ -129,22 +128,25 @@ describe('GitHub Actions workflow integrity', () => {
     expect(buildJob).not.toContain('sha256sum release-notes.md >> SHA256SUMS');
     expect(buildJob).not.toContain('cp apps/web/dist/index.html dist/release/management.html');
 
-    expect(publishJob).toContain('test -s dist/release/metadata.json');
-    expect(publishJob).toContain('test -s dist/release/SOURCE_COMMIT');
-    expect(publishJob).toContain('test -s dist/release/SHA256SUMS');
-    expect(publishJob).toContain('test -s dist/release/native/checksums.txt');
-    expect(publishJob).toContain('(cd dist/release && sha256sum -c SHA256SUMS)');
-    expect(publishJob).toContain('sha256sum -c checksums.txt');
-    expect(publishJob).toContain('git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"');
-    expect(publishJob).toContain('release_commit="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"');
-    expect(publishJob).toContain('test "${release_commit}" = "${GITHUB_SHA}"');
-    expect(publishJob).toContain('metadata["sourceHead"] == sys.argv[2]');
-    expect(publishJob).toContain('metadata["sourceTag"] == sys.argv[3]');
-    expect(publishJob).toContain('metadata["buildVersion"] == sys.argv[3]');
-    expect(publishJob).toContain('dist/release/metadata.json');
-    expect(publishJob).toContain('dist/release/SOURCE_COMMIT');
-    expect(publishJob).toContain('dist/release/SHA256SUMS');
-    expect(publishJob).toContain('dist/release/native/checksums.txt');
+    expect(buildJob).not.toContain('actions/upload-artifact@');
+    expect(buildJob).not.toContain('actions/download-artifact@');
+    expect(buildJob).toContain("if: env.DRY_RUN != 'true'");
+    expect(buildJob).toContain('test -s dist/release/metadata.json');
+    expect(buildJob).toContain('test -s dist/release/SOURCE_COMMIT');
+    expect(buildJob).toContain('test -s dist/release/SHA256SUMS');
+    expect(buildJob).toContain('test -s dist/release/native/checksums.txt');
+    expect(buildJob).toContain('(cd dist/release && sha256sum -c SHA256SUMS)');
+    expect(buildJob).toContain('sha256sum -c checksums.txt');
+    expect(buildJob).toContain('git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"');
+    expect(buildJob).toContain('release_commit="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"');
+    expect(buildJob).toContain('test "${release_commit}" = "${GITHUB_SHA}"');
+    expect(buildJob).toContain('metadata["sourceHead"] == sys.argv[2]');
+    expect(buildJob).toContain('metadata["sourceTag"] == sys.argv[3]');
+    expect(buildJob).toContain('metadata["buildVersion"] == sys.argv[3]');
+    expect(buildJob).toContain('dist/release/metadata.json');
+    expect(buildJob).toContain('dist/release/SOURCE_COMMIT');
+    expect(buildJob).toContain('dist/release/SHA256SUMS');
+    expect(buildJob).toContain('dist/release/native/checksums.txt');
   });
 
   it('exposes a serialized dry-run path and rejects legacy release-note fallback', () => {
