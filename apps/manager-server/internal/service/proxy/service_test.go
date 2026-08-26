@@ -1169,6 +1169,47 @@ func TestProxyVerifiedAuthFileWritesRecheckContentAfterSameFileMutation(t *testi
 	}
 }
 
+func TestProxyManagementDoesNotForwardCallerIPHeadersWithSavedKey(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer management-key" {
+			t.Fatalf("Authorization = %q, want saved management key", got)
+		}
+		for _, header := range []string{"CF-Connecting-IP", "X-Forwarded-For", "X-Real-IP"} {
+			if got := r.Header.Get(header); got != "" {
+				t.Fatalf("%s = %q, want empty", header, got)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	if err := st.SaveSetup(context.Background(), store.Setup{
+		CPAUpstreamURL: upstream.URL,
+		ManagementKey:  "management-key",
+	}); err != nil {
+		t.Fatalf("save setup: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v0/management/auth-files", nil)
+	req.Header.Set("CF-Connecting-IP", "198.51.100.10")
+	req.Header.Set("X-Forwarded-For", "198.51.100.10")
+	req.Header.Set("X-Real-IP", "198.51.100.10")
+	recorder := httptest.NewRecorder()
+	New(managerconfig.New(config.Config{}, st, nil), st).ProxyManagement(
+		recorder,
+		req,
+		func(w http.ResponseWriter, status int, err error) { http.Error(w, err.Error(), status) },
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("response status = %d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestInspectAuthFileOwnershipMutationRequiresWriteContentSHA256(t *testing.T) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)

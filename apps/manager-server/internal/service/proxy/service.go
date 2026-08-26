@@ -242,25 +242,31 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		ownershipMutation.fileNames = ownershipFileNames(revokedOwnership)
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.URL.Scheme = target.Scheme
-		req.URL.Host = target.Host
-		req.Host = target.Host
-		if useSavedManagementKey {
-			req.Header.Set("Authorization", "Bearer "+setup.ManagementKey)
+	if useSavedManagementKey {
+		proxy.Director = nil
+		proxy.Rewrite = func(proxyRequest *httputil.ProxyRequest) {
+			proxyRequest.SetURL(target)
+			proxyRequest.Out.Host = target.Host
+			proxyRequest.Out.Header.Del("CF-Connecting-IP")
+			proxyRequest.Out.Header.Del("X-Forwarded-For")
+			proxyRequest.Out.Header.Del("X-Real-IP")
+			proxyRequest.Out.Header.Set("Authorization", "Bearer "+setup.ManagementKey)
+			if rewritePluginOrigin {
+				rewriteCodexInviteOrigin(proxyRequest.Out.Header, target)
+			}
+			sanitizeProxyHeaders(proxyRequest.Out.Header, ownershipMutation)
 		}
-		if rewritePluginOrigin {
-			rewriteCodexInviteOrigin(req.Header, target)
-		}
-		req.Header.Del(authFilePhysicalNameHeader)
-		req.Header.Del(authFileDeleteIdentitiesHeader)
-		req.Header.Del(authFileMutationIdentityHeader)
-		req.Header.Del(authFileWriteIdentitiesHeader)
-		req.Header.Del(authFileWriteContentSHA256Header)
-		if ownershipMutation.clearAll || len(ownershipMutation.fileNames) > 0 || len(ownershipMutation.ownershipTargets) > 0 {
-			req.Header.Set("Accept-Encoding", "identity")
+	} else {
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.Host = target.Host
+			if rewritePluginOrigin {
+				rewriteCodexInviteOrigin(req.Header, target)
+			}
+			sanitizeProxyHeaders(req.Header, ownershipMutation)
 		}
 	}
 	responseProcessed := false
@@ -287,6 +293,17 @@ func (s *Service) proxyToSavedSetup(w http.ResponseWriter, r *http.Request, writ
 		return s.restoreInspectionOwnershipDetached(r.Context(), ownershipItemsNotMutated(revokedOwnership, mutation))
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func sanitizeProxyHeaders(header http.Header, mutation authFileOwnershipMutation) {
+	header.Del(authFilePhysicalNameHeader)
+	header.Del(authFileDeleteIdentitiesHeader)
+	header.Del(authFileMutationIdentityHeader)
+	header.Del(authFileWriteIdentitiesHeader)
+	header.Del(authFileWriteContentSHA256Header)
+	if mutation.clearAll || len(mutation.fileNames) > 0 || len(mutation.ownershipTargets) > 0 {
+		header.Set("Accept-Encoding", "identity")
+	}
 }
 
 func (s *Service) acquireAuthFileMutation(
