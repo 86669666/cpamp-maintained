@@ -199,7 +199,7 @@ export const validateChangedReleaseContent = ({
     releases: tags.map((tag) =>
       validateReleaseContent({
         tag,
-        repositoryUrl,
+        repositoryUrl: tag.includes('-maintained.') ? repositoryUrl : upstreamRepositoryUrl,
         ...(readFile ? { readFile } : {}),
         ...(fileExists ? { fileExists } : {}),
       })

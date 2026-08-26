@@ -14,6 +14,7 @@ import {
 } from '../bin/release/validate-release.mjs';
 
 const releaseTag = 'v1.2.3';
+const upstreamRepositoryUrl = 'https://github.com/seakee/CPA-Manager-Plus';
 const releasePaths = {
   chinese: `docs/release-notes/${releaseTag}-zh.md`,
   english: `docs/release-notes/${releaseTag}-en.md`,
@@ -152,22 +153,92 @@ describe('release content validation', () => {
 
   it('validates changed maintained release content against the maintained repository URL', () => {
     const repositoryUrl = 'https://github.com/86669666/cpamp-maintained';
+    const maintainedTag = 'v1.2.3-maintained.1';
+    const maintainedPaths = {
+      chinese: `docs/release-notes/${maintainedTag}-zh.md`,
+      english: `docs/release-notes/${maintainedTag}-en.md`,
+      telegram: `docs/release-posts/${maintainedTag}-telegram.html`,
+    };
     const contents = new Map([
-      [releasePaths.chinese, chineseNotes.replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl)],
-      [releasePaths.english, englishNotes.replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl)],
-      [releasePaths.telegram, telegramPost],
+      [
+        maintainedPaths.chinese,
+        chineseNotes
+          .replaceAll(releaseTag, maintainedTag)
+          .replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl),
+      ],
+      [
+        maintainedPaths.english,
+        englishNotes
+          .replaceAll(releaseTag, maintainedTag)
+          .replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl),
+      ],
+      [maintainedPaths.telegram, telegramPost],
     ]);
     const readFile = (filePath) => contents.get(filePath.split('/').slice(-3).join('/'));
     const fileExists = (filePath) => contents.has(filePath.split('/').slice(-3).join('/'));
 
     expect(
       validateChangedReleaseContent({
-        changedFiles: Object.values(releasePaths),
+        changedFiles: Object.values(maintainedPaths),
         repositoryUrl,
         readFile,
         fileExists,
       })
-    ).toMatchObject({ tags: [releaseTag] });
+    ).toMatchObject({ tags: [maintainedTag] });
+  });
+
+  it('keeps upstream release-note links upstream when a maintained merge adds both releases', () => {
+    const repositoryUrl = 'https://github.com/86669666/cpamp-maintained';
+    const maintainedTag = 'v1.12.5-maintained.1';
+    const maintainedPaths = {
+      chinese: `docs/release-notes/${maintainedTag}-zh.md`,
+      english: `docs/release-notes/${maintainedTag}-en.md`,
+      telegram: `docs/release-posts/${maintainedTag}-telegram.html`,
+    };
+    const upstreamPaths = {
+      chinese: 'docs/release-notes/v1.12.5-zh.md',
+      english: 'docs/release-notes/v1.12.5-en.md',
+      telegram: 'docs/release-posts/v1.12.5-telegram.html',
+    };
+    const contents = new Map([
+      [
+        upstreamPaths.chinese,
+        chineseNotes
+          .replaceAll(releaseTag, 'v1.12.5')
+          .replace('https://github.com/seakee/CPA-Manager-Plus', upstreamRepositoryUrl),
+      ],
+      [
+        upstreamPaths.english,
+        englishNotes
+          .replaceAll(releaseTag, 'v1.12.5')
+          .replace('https://github.com/seakee/CPA-Manager-Plus', upstreamRepositoryUrl),
+      ],
+      [upstreamPaths.telegram, telegramPost],
+      [
+        maintainedPaths.chinese,
+        chineseNotes
+          .replaceAll(releaseTag, maintainedTag)
+          .replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl),
+      ],
+      [
+        maintainedPaths.english,
+        englishNotes
+          .replaceAll(releaseTag, maintainedTag)
+          .replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl),
+      ],
+      [maintainedPaths.telegram, telegramPost],
+    ]);
+    const readFile = (filePath) => contents.get(filePath.split('/').slice(-3).join('/'));
+    const fileExists = (filePath) => contents.has(filePath.split('/').slice(-3).join('/'));
+
+    expect(
+      validateChangedReleaseContent({
+        changedFiles: [...Object.values(upstreamPaths), ...Object.values(maintainedPaths)],
+        repositoryUrl,
+        readFile,
+        fileExists,
+      })
+    ).toMatchObject({ tags: ['v1.12.5', maintainedTag] });
   });
 });
 
