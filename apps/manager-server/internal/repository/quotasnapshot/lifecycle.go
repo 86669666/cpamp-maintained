@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -13,11 +14,12 @@ import (
 )
 
 const (
-	quotaBoundaryJitterMS         = int64(60 * 1000)
-	quotaProvisionalStartJitterMS = int64(60 * 1000)
-	quotaResetNearZeroPercent     = 1.0
-	quotaResetMinimumPriorPercent = 5.0
-	quotaResetLargeDropPercent    = 20.0
+	quotaBoundaryJitterMS             = int64(60 * 1000)
+	quotaProvisionalStartJitterMS     = int64(60 * 1000)
+	quotaPreviousCycleOverlapJitterMS = int64(60 * 1000)
+	quotaResetNearZeroPercent         = 1.0
+	quotaResetMinimumPriorPercent     = 5.0
+	quotaResetLargeDropPercent        = 20.0
 )
 
 type logicalWindowRow struct {
@@ -1687,7 +1689,8 @@ func findLogicalWindow(ctx context.Context, tx *sql.Tx, accountKey, provider, pr
 func activeActivationID(ctx context.Context, tx *sql.Tx, windowID int64) (int64, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx, `select id from account_quota_window_activations
-		where window_id = ? and deactivated_at_ms is null order by generation desc limit 1`, windowID).Scan(&id)
+		where window_id = ? and generation = (select generation from account_quota_windows where id = ?)
+			and deactivated_at_ms is null limit 1`, windowID, windowID).Scan(&id)
 	return id, err
 }
 
@@ -1738,7 +1741,7 @@ func linkContainerCycles(ctx context.Context, tx *sql.Tx, accountKey, provider s
 			w.scope_fingerprint, w.inventory_scope_key, c.actual_start_ms
 		from account_quota_windows w
 		join account_quota_window_activations a
-			on a.window_id = w.id and a.deactivated_at_ms is null
+			on a.window_id = w.id and a.generation = w.generation and a.deactivated_at_ms is null
 		join account_quota_cycles c
 			on c.activation_id = a.id and c.actual_end_ms is null
 		where w.account_key = ? and w.provider = ? and w.availability = 'active'
@@ -1812,7 +1815,7 @@ func resolveContainerCycleID(
 	err := tx.QueryRowContext(ctx, `select c.id
 		from account_quota_windows w
 		join account_quota_window_activations a
-			on a.window_id = w.id and a.deactivated_at_ms is null
+			on a.window_id = w.id and a.generation = w.generation and a.deactivated_at_ms is null
 		join account_quota_cycles c
 			on c.activation_id = a.id
 		where w.account_key = ? and w.provider = ? and w.provider_window_id = ?
@@ -1928,7 +1931,10 @@ func latestActivationID(ctx context.Context, db *sql.DB, windowID int64, generat
 	return id, err
 }
 
-func previousCycle(ctx context.Context, db *sql.DB, activationID, currentStartMS int64) (model.AccountQuotaCycle, error) {
+// adjacentPreviousCycle returns the cycle immediately preceding currentStartMS.
+// The jitter bound is intentional: this helper is used only while normalizing
+// early-reset fragments, where time adjacency is part of the collapse proof.
+func adjacentPreviousCycle(ctx context.Context, db *sql.DB, activationID, currentStartMS int64) (model.AccountQuotaCycle, error) {
 	return scanCycle(db.QueryRowContext(ctx, `select
 		id, activation_id, provider_cycle_key, state, scheduled_start_ms, scheduled_end_ms,
 		actual_start_ms, actual_end_ms, duration_seconds, boundary_accuracy,
@@ -1939,6 +1945,42 @@ func previousCycle(ctx context.Context, db *sql.DB, activationID, currentStartMS
 			and actual_start_ms < ? and abs(actual_end_ms - ?) <= ?
 		order by actual_end_ms desc, id desc limit 1`,
 		activationID, currentStartMS, currentStartMS, quotaBoundaryJitterMS))
+}
+
+// latestClosedCycleBefore returns the most recent completed quota cycle in the
+// same activation before cutoffMS. Unlike adjacentPreviousCycle, it intentionally
+// permits observation gaps; activation identity provides the lifecycle fence.
+// A mode change is an explicit boundary between fixed/calendar cycle histories,
+// so candidates before that boundary are not exposed as a previous quota cycle.
+func latestClosedCycleBefore(ctx context.Context, db *sql.DB, activationID, cutoffMS int64) (model.AccountQuotaCycle, error) {
+	overlapCutoffMS := cutoffMS
+	if overlapCutoffMS > math.MaxInt64-quotaPreviousCycleOverlapJitterMS {
+		overlapCutoffMS = math.MaxInt64
+	} else {
+		overlapCutoffMS += quotaPreviousCycleOverlapJitterMS
+	}
+	return scanCycle(db.QueryRowContext(ctx, `select
+		candidate.id, candidate.activation_id, candidate.provider_cycle_key, candidate.state,
+		candidate.scheduled_start_ms, candidate.scheduled_end_ms, candidate.actual_start_ms,
+		candidate.actual_end_ms, candidate.duration_seconds, candidate.boundary_accuracy,
+		coalesce(candidate.end_reason, ''), candidate.first_observation_id,
+		candidate.last_observation_id, candidate.parent_cycle_id,
+		candidate.created_at_ms, candidate.updated_at_ms
+		from account_quota_cycles candidate
+		where candidate.activation_id = ? and candidate.actual_end_ms is not null
+			and coalesce(candidate.end_reason, '') <> 'mode_changed'
+			and candidate.actual_start_ms < ?
+			and candidate.actual_end_ms <= ?
+			and not exists (
+				select 1 from account_quota_cycles barrier
+				where barrier.activation_id = candidate.activation_id
+					and barrier.end_reason = 'mode_changed'
+					and barrier.actual_end_ms is not null
+					and barrier.actual_end_ms >= candidate.actual_start_ms
+					and barrier.actual_end_ms <= ?
+			)
+		order by candidate.actual_end_ms desc, candidate.id desc limit 1`,
+		activationID, cutoffMS, overlapCutoffMS, cutoffMS))
 }
 
 type quotaCycleEvidence struct {
@@ -1971,7 +2013,7 @@ func normalizeCycleView(
 	collapsedCycleIDs := []int64{current.ID}
 	var previousResult *model.AccountQuotaCycle
 	for {
-		previous, previousErr := previousCycle(ctx, db, activationID, lookupStartMS)
+		previous, previousErr := adjacentPreviousCycle(ctx, db, activationID, lookupStartMS)
 		if errors.Is(previousErr, sql.ErrNoRows) {
 			break
 		}
@@ -2036,6 +2078,18 @@ func normalizeCycleView(
 	if collapsed && previousResult != nil && previousResult.ActualEndMS != nil {
 		actualEndMS := current.ActualStartMS
 		previousResult.ActualEndMS = &actualEndMS
+	}
+	if previousResult != nil && previousResult.EndReason == "mode_changed" {
+		previousResult = nil
+	}
+	if previousResult == nil {
+		fallback, fallbackErr := latestClosedCycleBefore(ctx, db, activationID, lookupStartMS)
+		if fallbackErr != nil && !errors.Is(fallbackErr, sql.ErrNoRows) {
+			return model.AccountQuotaCycle{}, nil, nil, fallbackErr
+		}
+		if fallbackErr == nil {
+			previousResult = &fallback
+		}
 	}
 	aliases := make(map[int64]int64)
 	if collapsed {

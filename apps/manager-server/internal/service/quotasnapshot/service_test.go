@@ -2324,6 +2324,42 @@ func TestQuotaLifecycleClosesFixedCycleWhenProviderChangesWindowMode(t *testing.
 	}
 }
 
+func TestQuotaLifecycleDoesNotCrossModeChangeWhenFindingHistoricalPrevious(t *testing.T) {
+	const durationSeconds = int64(24 * 60 * 60)
+	firstStartMS := quotaLifecycleBaseMS
+	firstEndMS := firstStartMS + durationSeconds*1000
+	secondStartMS := firstEndMS + 8*60*1000
+	thirdStartMS := secondStartMS + 3*quotaLifecycleHourMS
+	service := newQuotaSnapshotTestService(t, thirdStartMS+quotaLifecycleHourMS)
+
+	first := quotaLifecycleFixedWindow("weekly", "weekly", firstStartMS, durationSeconds, 70)
+	writeQuotaLifecycleObservation(t, service, "complete", firstStartMS+quotaLifecycleHourMS, []WindowInput{first})
+	second := quotaLifecycleFixedWindow("weekly", "weekly", secondStartMS, durationSeconds, 50)
+	writeQuotaLifecycleObservation(t, service, "complete", secondStartMS+quotaLifecycleHourMS, []WindowInput{second})
+
+	duration := durationSeconds
+	used := 45.0
+	rolling := WindowInput{
+		ProviderWindowID: "weekly",
+		WindowKind:       "weekly",
+		WindowMode:       "rolling",
+		ModelScopeKind:   "all",
+		Source:           "inspection",
+		BoundaryAccuracy: "estimated",
+		DurationSeconds:  &duration,
+		UsedPercent:      &used,
+	}
+	writeQuotaLifecycleObservation(t, service, "complete", secondStartMS+2*quotaLifecycleHourMS, []WindowInput{rolling})
+
+	third := quotaLifecycleFixedWindow("weekly", "weekly", thirdStartMS, durationSeconds, 1)
+	writeQuotaLifecycleObservation(t, service, "complete", thirdStartMS+1_000, []WindowInput{third})
+
+	window := queryQuotaLifecycleWindows(t, service, false)["weekly"]
+	if window.CurrentCycle == nil || window.CurrentCycle.ActualStartMS != thirdStartMS || window.PreviousCycle != nil {
+		t.Fatalf("mode-change barrier leaked historical previous = %#v", window)
+	}
+}
+
 func TestQuotaLifecycleRestoresClosedProviderCycleWithoutDuplicateInsert(t *testing.T) {
 	service, path := newQuotaSnapshotTestServiceWithPath(t, quotaLifecycleBaseMS+2*quotaLifecycleDayMS)
 	original := quotaLifecycleFixedWindow("weekly", "weekly", quotaLifecycleBaseMS, 7*24*60*60, 40)
@@ -2421,18 +2457,108 @@ func TestQuotaLifecycleExactEvidenceReplacesDerivedCycleBoundary(t *testing.T) {
 	}
 }
 
-func TestQuotaLifecycleDoesNotExposeNonAdjacentHistoricalCycleAsPrevious(t *testing.T) {
+func TestQuotaLifecycleExposesSameActivationHistoricalCycleAsPreviousAfterGap(t *testing.T) {
 	service := newQuotaSnapshotTestService(t, quotaLifecycleBaseMS+4*quotaLifecycleDayMS)
 	first := quotaLifecycleFixedWindow("weekly", "weekly", quotaLifecycleBaseMS, 24*60*60, 70)
 	writeQuotaLifecycleObservation(t, service, "complete", quotaLifecycleBaseMS+quotaLifecycleHourMS, []WindowInput{first})
 
-	secondStartMS := quotaLifecycleBaseMS + 2*quotaLifecycleDayMS
+	firstEndMS := quotaLifecycleBaseMS + 24*60*60*1000
+	secondStartMS := firstEndMS + 477*1000
 	second := quotaLifecycleFixedWindow("weekly", "weekly", secondStartMS, 24*60*60, 10)
 	writeQuotaLifecycleObservation(t, service, "complete", secondStartMS+quotaLifecycleHourMS, []WindowInput{second})
 
 	window := queryQuotaLifecycleWindows(t, service, false)["weekly"]
-	if window.CurrentCycle == nil || window.CurrentCycle.ActualStartMS != secondStartMS || window.PreviousCycle != nil {
-		t.Fatalf("non-adjacent previous lifecycle = %#v", window)
+	if window.CurrentCycle == nil || window.CurrentCycle.ActualStartMS != secondStartMS ||
+		window.PreviousCycle == nil || window.PreviousCycle.ActualStartMS != quotaLifecycleBaseMS ||
+		window.PreviousCycle.ActualEndMS == nil || *window.PreviousCycle.ActualEndMS != firstEndMS ||
+		window.PreviousCycle.EndReason != "scheduled" ||
+		window.PreviousCycle.ActivationID != window.CurrentCycle.ActivationID {
+		t.Fatalf("scheduled gap previous lifecycle = %#v", window)
+	}
+}
+
+func TestQuotaLifecycleDoesNotReexposeCollapsedFragmentAsPrevious(t *testing.T) {
+	const durationSeconds = int64(24 * 60 * 60)
+	service, path := newQuotaSnapshotTestServiceWithPath(t, quotaLifecycleBaseMS+3*quotaLifecycleDayMS)
+	initial := quotaLifecycleFixedWindow("weekly", "weekly", quotaLifecycleBaseMS, durationSeconds, 70)
+	writeQuotaLifecycleObservation(t, service, "complete", quotaLifecycleBaseMS+quotaLifecycleHourMS, []WindowInput{initial})
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open collapsed-fragment database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var activationID, originalCycleID, originalSnapshotID int64
+	if err := db.QueryRow(`select activation_id, logical_window_id, cycle_id, id
+		from account_quota_snapshots order by id limit 1`).Scan(
+		&activationID, new(int64), &originalCycleID, &originalSnapshotID,
+	); err != nil {
+		t.Fatalf("read initial collapsed-fragment lifecycle: %v", err)
+	}
+
+	firstEndMS := quotaLifecycleBaseMS + durationSeconds*1000
+	fragmentStartMS := firstEndMS + 5*quotaLifecycleHourMS
+	currentStartMS := fragmentStartMS + 30*1000
+	invalidEndMS := fragmentStartMS + 2*60*1000
+	if _, err := db.Exec(`update account_quota_cycles set
+		state = 'closed', actual_end_ms = ?, end_reason = 'scheduled' where id = ?`,
+		firstEndMS, originalCycleID); err != nil {
+		t.Fatalf("close initial collapsed-fragment cycle: %v", err)
+	}
+
+	insertCycle := func(key, state string, startMS int64, endMS *int64, endReason string) int64 {
+		t.Helper()
+		result, insertErr := db.Exec(`insert into account_quota_cycles (
+			activation_id, provider_cycle_key, state, scheduled_start_ms, scheduled_end_ms,
+			actual_start_ms, actual_end_ms, duration_seconds, boundary_accuracy, end_reason,
+			created_at_ms, updated_at_ms
+		) values (?, ?, ?, ?, ?, ?, ?, ?, 'exact', ?, ?, ?)`,
+			activationID, key, state, startMS, startMS+durationSeconds*1000,
+			startMS, endMS, durationSeconds, endReason, startMS, startMS,
+		)
+		if insertErr != nil {
+			t.Fatalf("insert collapsed-fragment cycle %s: %v", key, insertErr)
+		}
+		id, insertErr := result.LastInsertId()
+		if insertErr != nil {
+			t.Fatalf("read collapsed-fragment cycle %s ID: %v", key, insertErr)
+		}
+		return id
+	}
+	fragmentEnd := currentStartMS
+	fragmentCycleID := insertCycle("weekly:fragment", "closed", fragmentStartMS, &fragmentEnd, "early_reset")
+	currentCycleID := insertCycle("weekly:current", "active", currentStartMS, nil, "")
+	_ = insertCycle("weekly:overlap", "closed", fragmentStartMS-2*quotaLifecycleHourMS, &invalidEndMS, "scheduled")
+
+	insertSnapshot := func(cycleID int64, sourceID string, observedAtMS, startMS int64, usedPercent float64) {
+		t.Helper()
+		_, insertErr := db.Exec(`insert into account_quota_snapshots (
+			observation_id, logical_window_id, activation_id, cycle_id, account_key, provider,
+			provider_window_id, window_kind, window_mode, model_scope_kind, model_scope_key,
+			model_ids_json, scope_fingerprint, content_hash, source, source_observation_id,
+			observed_at_ms, boundary_accuracy, cycle_start_ms, cycle_end_ms,
+			duration_seconds, used_percent, created_at_ms
+		) select observation_id, logical_window_id, activation_id, ?, account_key, provider,
+			provider_window_id, window_kind, window_mode, model_scope_kind, model_scope_key,
+			model_ids_json, scope_fingerprint, ?, 'inspection', ?, ?, 'exact', ?, ?, ?, ?, ?
+			from account_quota_snapshots where id = ?`,
+			cycleID, sourceID, sourceID, observedAtMS,
+			startMS, startMS+durationSeconds*1000, durationSeconds, usedPercent, observedAtMS,
+			originalSnapshotID,
+		)
+		if insertErr != nil {
+			t.Fatalf("insert collapsed-fragment snapshot %s: %v", sourceID, insertErr)
+		}
+	}
+	insertSnapshot(fragmentCycleID, "fragment-observation", fragmentStartMS+1_000, fragmentStartMS, 40)
+	insertSnapshot(currentCycleID, "current-observation", currentStartMS+1_000, currentStartMS, 38)
+
+	window := queryQuotaLifecycleWindows(t, service, false)["weekly"]
+	if window.CurrentCycle == nil || window.CurrentCycle.ID != fragmentCycleID ||
+		window.PreviousCycle == nil || window.PreviousCycle.ID != originalCycleID ||
+		window.PreviousCycle.ID == fragmentCycleID || window.PreviousCycle.ActualEndMS == nil ||
+		*window.PreviousCycle.ActualEndMS != firstEndMS {
+		t.Fatalf("collapsed fragment previous lifecycle = %#v", window)
 	}
 }
 
@@ -2726,6 +2852,48 @@ func TestQuotaLifecycleNormalizesStoredEarlyResetBoundaryToFirstConfirmedObserva
 	}
 }
 
+func TestQuotaLifecycleDoesNotCollapseEarlyResetFragmentAcrossObservationGap(t *testing.T) {
+	const durationSeconds = int64(7 * 24 * 60 * 60)
+	firstRequestAtMS := quotaLifecycleBaseMS + 3*quotaLifecycleDayMS
+	providerStartMS := firstRequestAtMS + 30*1000
+	currentStartMS := providerStartMS + 2*60*1000
+	service, path := newQuotaSnapshotTestServiceWithPath(t, currentStartMS+quotaLifecycleDayMS)
+	oldCycle := quotaLifecycleFixedWindow("weekly", "weekly", quotaLifecycleBaseMS, durationSeconds, 40)
+	writeQuotaLifecycleObservation(t, service, "complete", firstRequestAtMS-quotaLifecycleHourMS, []WindowInput{oldCycle})
+
+	reset := quotaLifecycleFixedWindow("weekly", "weekly", providerStartMS, durationSeconds, 1)
+	writeQuotaLifecycleObservation(t, service, "complete", firstRequestAtMS, []WindowInput{reset})
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open lifecycle database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	var oldCycleID, currentCycleID int64
+	if err := db.QueryRow(`select id from account_quota_cycles
+		where end_reason = 'early_reset' limit 1`).Scan(&oldCycleID); err != nil {
+		t.Fatalf("read early-reset fragment cycle: %v", err)
+	}
+	if err := db.QueryRow(`select id from account_quota_cycles
+		where actual_end_ms is null limit 1`).Scan(&currentCycleID); err != nil {
+		t.Fatalf("read active cycle: %v", err)
+	}
+	if _, err := db.Exec(`update account_quota_cycles set actual_end_ms = ? where id = ?`, providerStartMS, oldCycleID); err != nil {
+		t.Fatalf("restore early-reset fragment end: %v", err)
+	}
+	if _, err := db.Exec(`update account_quota_cycles set actual_start_ms = ? where id = ?`, currentStartMS, currentCycleID); err != nil {
+		t.Fatalf("introduce early-reset observation gap: %v", err)
+	}
+
+	window := queryQuotaLifecycleWindows(t, service, false)["weekly"]
+	if window.CurrentCycle == nil || window.CurrentCycle.ID != currentCycleID ||
+		window.CurrentCycle.ActualStartMS != currentStartMS || window.PreviousCycle == nil ||
+		window.PreviousCycle.ID != oldCycleID || window.PreviousCycle.EndReason != "early_reset" ||
+		window.PreviousCycle.ActualEndMS == nil || *window.PreviousCycle.ActualEndMS != providerStartMS {
+		t.Fatalf("early-reset gap lifecycle = %#v", window)
+	}
+}
+
 func TestQuotaLifecycleMarksConcurrentFiveHourAndWeeklyResetAsProviderReset(t *testing.T) {
 	resetAtMS := quotaLifecycleBaseMS + 3*quotaLifecycleDayMS
 	service := newQuotaSnapshotTestService(t, resetAtMS+2*quotaLifecycleDayMS)
@@ -2845,6 +3013,24 @@ func TestQuotaLifecycleDoesNotSplitCycleForSmallQuotaCorrection(t *testing.T) {
 	if window.CurrentCycle == nil || window.CurrentCycle.ActualStartMS != quotaLifecycleBaseMS ||
 		window.PreviousCycle != nil {
 		t.Fatalf("small quota correction split lifecycle = %#v", window)
+	}
+}
+
+func TestQuotaLifecycleDetectsLargeQuotaDropReset(t *testing.T) {
+	resetAtMS := quotaLifecycleBaseMS + 3*quotaLifecycleHourMS
+	service := newQuotaSnapshotTestService(t, resetAtMS+quotaLifecycleDayMS)
+	first := quotaLifecycleFixedWindow("weekly", "weekly", quotaLifecycleBaseMS, 7*24*60*60, 60)
+	writeQuotaLifecycleObservation(t, service, "complete", quotaLifecycleBaseMS+quotaLifecycleHourMS, []WindowInput{first})
+
+	reset := quotaLifecycleFixedWindow("weekly", "weekly", resetAtMS, 7*24*60*60, 25)
+	writeQuotaLifecycleObservation(t, service, "complete", resetAtMS+1_000, []WindowInput{reset})
+
+	window := queryQuotaLifecycleWindows(t, service, false)["weekly"]
+	if window.CurrentCycle == nil || window.CurrentCycle.ActualStartMS != resetAtMS ||
+		window.PreviousCycle == nil || window.PreviousCycle.ActualEndMS == nil ||
+		*window.PreviousCycle.ActualEndMS != resetAtMS || window.PreviousCycle.EndReason != "early_reset" ||
+		window.PreviousCycle.ForecastEligible {
+		t.Fatalf("large quota drop reset lifecycle = %#v", window)
 	}
 }
 
@@ -3356,6 +3542,46 @@ func TestQuotaLifecycleScheduledRolloverUsesScheduledBoundaryAfterIdleGap(t *tes
 		!window.PreviousCycle.ForecastEligible || window.PreviousCycle.ActualEndMS == nil ||
 		*window.PreviousCycle.ActualEndMS != rolloverAtMS {
 		t.Fatalf("scheduled rollover after idle gap = %#v", window)
+	}
+}
+
+func TestQuotaLifecycleExposesFiveHourAndWeeklyScheduledGapsAsPrevious(t *testing.T) {
+	const gapMS = int64(8 * 60 * 1000)
+	weeklyStartMS := quotaLifecycleBaseMS
+	fiveHourStartMS := quotaLifecycleBaseMS
+	weeklyEndMS := weeklyStartMS + 7*24*60*60*1000
+	fiveHourEndMS := fiveHourStartMS + 5*60*60*1000
+	weeklyNextStartMS := weeklyEndMS + gapMS
+	fiveHourNextStartMS := fiveHourEndMS + gapMS
+	service := newQuotaSnapshotTestService(t, weeklyNextStartMS+quotaLifecycleHourMS)
+
+	firstWeekly := quotaLifecycleFixedWindow("weekly", "weekly", weeklyStartMS, 7*24*60*60, 80)
+	firstFiveHour := quotaLifecycleFixedWindow("five-hour", "five_hour", fiveHourStartMS, 5*60*60, 70)
+	writeQuotaLifecycleObservation(t, service, "complete", quotaLifecycleBaseMS+quotaLifecycleHourMS, []WindowInput{
+		firstFiveHour,
+		firstWeekly,
+	})
+
+	secondWeekly := quotaLifecycleFixedWindow("weekly", "weekly", weeklyNextStartMS, 7*24*60*60, 1)
+	secondFiveHour := quotaLifecycleFixedWindow("five-hour", "five_hour", fiveHourNextStartMS, 5*60*60, 1)
+	writeQuotaLifecycleObservation(t, service, "complete", weeklyNextStartMS+quotaLifecycleHourMS, []WindowInput{
+		secondFiveHour,
+		secondWeekly,
+	})
+
+	windows := queryQuotaLifecycleWindows(t, service, false)
+	for id, bounds := range map[string][2]int64{
+		"five-hour": {fiveHourStartMS, fiveHourEndMS},
+		"weekly":    {weeklyStartMS, weeklyEndMS},
+	} {
+		wantStart, wantEnd := bounds[0], bounds[1]
+		window := windows[id]
+		if window.CurrentCycle == nil || window.PreviousCycle == nil ||
+			window.PreviousCycle.ActualStartMS != wantStart || window.PreviousCycle.ActualEndMS == nil ||
+			*window.PreviousCycle.ActualEndMS != wantEnd || window.PreviousCycle.EndReason != "scheduled" ||
+			window.PreviousCycle.ActivationID != window.CurrentCycle.ActivationID {
+			t.Fatalf("%s scheduled gap previous lifecycle = %#v", id, window)
+		}
 	}
 }
 

@@ -1,8 +1,8 @@
 {
   "upstream": {
     "repository": "https://github.com/seakee/CPA-Manager-Plus.git",
-    "tag": "v1.12.5",
-    "commit": "b1179618bad2740ae6d441be9b1b1b800379cfc3"
+    "tag": "v1.12.6",
+    "commit": "c428c212b8d4f2db5c3a8c288e9fe3cbb5f6c650"
   },
   "revision": 3,
   "variant": "lightweight-plugin-lockdown-local-tools"

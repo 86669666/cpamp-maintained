@@ -100,6 +100,7 @@ import {
   getHeaderSnapshotUsedPercent,
   getUsageHeaderSnapshotMatchForIdentity,
 } from '@/utils/usageHeaderSnapshots';
+import { getPlanPresentation } from '@/utils/plans';
 import styles from './CodexInspectionPage.module.scss';
 
 type ServerCodexInspectionDraft = {
@@ -545,6 +546,7 @@ function formatObservedHeaderRecoverAt(value: number | null, locale: string) {
 
 function buildObservedHeaderEvidence(
   snapshot: UsageHeaderSnapshot | undefined,
+  provider: string,
   locale: string,
   t: ReturnType<typeof useTranslation>['t']
 ) {
@@ -558,8 +560,13 @@ function buildObservedHeaderEvidence(
       })
     );
   }
+  const planLabel = getPlanPresentation({
+    provider,
+    planType: getHeaderSnapshotPlanType(snapshot),
+    t,
+  })?.fullLabel;
   const quotaParts = [
-    getHeaderSnapshotPlanType(snapshot),
+    planLabel,
     (() => {
       const usedPercent = getHeaderSnapshotUsedPercent(snapshot);
       return typeof usedPercent === 'number' && Number.isFinite(usedPercent)
@@ -603,7 +610,7 @@ export function toServerResultItem(
   const actionReason = item.actionReason?.startsWith('monitoring.')
     ? t(item.actionReason)
     : item.actionReason;
-  const observedHeaderEvidence = buildObservedHeaderEvidence(snapshot, locale, t);
+  const observedHeaderEvidence = buildObservedHeaderEvidence(snapshot, item.provider, locale, t);
   return {
     key: `server-${item.id || item.accountKey}`,
     runtimeId: item.runtimeId ?? null,

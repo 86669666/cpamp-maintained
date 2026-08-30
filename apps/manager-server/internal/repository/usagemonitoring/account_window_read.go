@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/usageevent"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/usageidentity"
 )
 
@@ -19,6 +20,10 @@ func (r *repository) LoadAccountWindowStats(ctx context.Context, windows []Accou
 		return nil, State{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	windows, err = usageevent.ResolveAccountWindowLegacyKeys(ctx, tx, windows)
+	if err != nil {
+		return nil, State{}, false, err
+	}
 	state, available, projectionComplete, err := projectionReadState(ctx, tx)
 	if err != nil || !available {
 		return nil, state, available, err
@@ -233,9 +238,8 @@ func accountWindowKey(window AccountWindowUsageQuery) string {
 func accountWindowKeys(window AccountWindowUsageQuery) (string, string) {
 	accountKey := accountWindowKey(window)
 	legacyAccountKey := accountKey
-	provider := strings.TrimSpace(strings.ToLower(strings.ReplaceAll(window.AuthProviderSnapshot, "_", "-")))
-	if provider == "codex" && (strings.TrimSpace(window.AuthAccountIDSnapshot) != "" || usageidentity.CodexAccountIDFromSnapshot(window.AuthProjectIDSnapshot) != "") {
-		if key, valid := usageidentity.LegacyAccountKey(usageidentity.Fields{AuthFileSnapshot: window.AuthFileSnapshot, AuthIndex: window.AuthIndex, AuthProviderSnapshot: window.AuthProviderSnapshot, AccountSnapshot: window.AccountSnapshot, AuthLabelSnapshot: window.AuthLabelSnapshot, Source: window.Source}); valid {
+	if window.LegacyAccountKeyChecked {
+		if key := strings.TrimSpace(window.LegacyAccountKey); key != "" {
 			legacyAccountKey = key
 		}
 	}

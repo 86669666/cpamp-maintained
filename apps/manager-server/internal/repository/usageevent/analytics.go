@@ -239,6 +239,12 @@ type AccountWindowUsageQuery struct {
 	AuthProjectIDSnapshot string
 	Source                string
 	AuthIndex             string
+	// LegacyAccountKey is populated only after the shared Codex identity
+	// compatibility check. LegacyAccountKeyChecked distinguishes an explicitly
+	// blocked check from a non-Codex/legacy target that needs no compatibility
+	// lookup.
+	LegacyAccountKey        string
+	LegacyAccountKeyChecked bool
 }
 
 type AccountWindowModelStat struct {
@@ -1596,10 +1602,19 @@ func (r *repository) AccountWindowModelStats(ctx context.Context, windows []Acco
 	if len(windows) == 0 {
 		return []AccountWindowModelStat{}, nil
 	}
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	resolvedWindows, err := ResolveAccountWindowLegacyKeys(ctx, tx, windows)
+	if err != nil {
+		return nil, err
+	}
 
-	values := make([]string, 0, len(windows))
-	args := make([]any, 0, len(windows)*5)
-	for _, window := range windows {
+	values := make([]string, 0, len(resolvedWindows))
+	args := make([]any, 0, len(resolvedWindows)*5)
+	for _, window := range resolvedWindows {
 		accountKey, legacyAccountKey := accountWindowQueryKeys(window)
 		values = append(values, "(?, ?, ?, ?, ?)")
 		args = append(
@@ -1612,7 +1627,7 @@ func (r *repository) AccountWindowModelStats(ctx context.Context, windows []Acco
 		)
 	}
 
-	rows, err := r.db.QueryContext(ctx, pricingBandedUsageEventsCTE+`, window_targets(
+	rows, err := tx.QueryContext(ctx, pricingBandedUsageEventsCTE+`, window_targets(
 	request_index, from_ms, to_ms, account_key, legacy_account_key
 ) as (
 	values `+strings.Join(values, ",")+`
@@ -1649,8 +1664,6 @@ order by w.request_index, max(e.timestamp_ms) desc`, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
 	stats := make([]AccountWindowModelStat, 0)
 	for rows.Next() {
 		var stat AccountWindowModelStat
@@ -1681,7 +1694,111 @@ order by w.request_index, max(e.timestamp_ms) desc`, args...)
 		}
 		stats = append(stats, stat)
 	}
-	return stats, rows.Err()
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
+// ResolveAccountWindowLegacyKeys prepares account-window targets with the
+// same fail-closed Codex legacy compatibility decision used by account
+// history. The returned slice is a copy and can safely be used as a query
+// snapshot-local representation.
+func ResolveAccountWindowLegacyKeys(
+	ctx context.Context,
+	queryer SQLQueryer,
+	windows []AccountWindowUsageQuery,
+) ([]AccountWindowUsageQuery, error) {
+	resolved := append([]AccountWindowUsageQuery(nil), windows...)
+	cache := make(map[string]struct {
+		key     string
+		allowed bool
+	})
+	legacyOwners := make(map[string]string)
+	legacyConflicts := make(map[string]struct{})
+	for index := range resolved {
+		window := &resolved[index]
+		if !codexLegacyWindowTarget(*window) {
+			continue
+		}
+		cacheKey := codexLegacyWindowCacheKey(*window)
+		result, ok := cache[cacheKey]
+		if !ok {
+			key, allowed, err := ResolveCodexLegacyAccountKey(ctx, queryer, accountWindowIdentityFields(*window))
+			if err != nil {
+				return nil, err
+			}
+			result = struct {
+				key     string
+				allowed bool
+			}{key: key, allowed: allowed}
+			cache[cacheKey] = result
+		}
+		window.LegacyAccountKeyChecked = true
+		if !result.allowed || result.key == "" {
+			continue
+		}
+		if _, conflicted := legacyConflicts[result.key]; conflicted {
+			continue
+		}
+		ownerKey := codexLegacyOwnerKey(*window)
+		if owner, ok := legacyOwners[result.key]; ok && owner != ownerKey {
+			legacyConflicts[result.key] = struct{}{}
+			continue
+		}
+		legacyOwners[result.key] = ownerKey
+		window.LegacyAccountKey = result.key
+	}
+	if len(legacyConflicts) > 0 {
+		for index := range resolved {
+			window := &resolved[index]
+			if _, conflicted := legacyConflicts[window.LegacyAccountKey]; conflicted {
+				window.LegacyAccountKey = ""
+			}
+		}
+	}
+	return resolved, nil
+}
+
+func codexLegacyOwnerKey(window AccountWindowUsageQuery) string {
+	return normalizeIdentityProvider(window.AuthProviderSnapshot) + "\x00" + strings.TrimSpace(window.AuthAccountIDSnapshot)
+}
+
+func codexLegacyWindowTarget(window AccountWindowUsageQuery) bool {
+	return strings.TrimSpace(window.AuthAccountIDSnapshot) != "" &&
+		normalizeIdentityProvider(window.AuthProviderSnapshot) == "codex"
+}
+
+func codexLegacyWindowCacheKey(window AccountWindowUsageQuery) string {
+	return strings.Join([]string{
+		normalizeIdentityProvider(window.AuthProviderSnapshot),
+		strings.TrimSpace(window.AuthAccountIDSnapshot),
+		strings.TrimSpace(window.AuthFileSnapshot),
+		strings.TrimSpace(window.AuthIndex),
+		strings.TrimSpace(window.AuthProjectIDSnapshot),
+		strings.TrimSpace(window.Source),
+		strings.TrimSpace(window.AccountSnapshot),
+		strings.TrimSpace(window.AuthLabelSnapshot),
+	}, "\x00")
+}
+
+func accountWindowIdentityFields(window AccountWindowUsageQuery) usageidentity.Fields {
+	return usageidentity.Fields{
+		AuthFileSnapshot:      window.AuthFileSnapshot,
+		AuthIndex:             window.AuthIndex,
+		AuthProviderSnapshot:  window.AuthProviderSnapshot,
+		AuthAccountIDSnapshot: window.AuthAccountIDSnapshot,
+		AuthProjectIDSnapshot: window.AuthProjectIDSnapshot,
+		AccountSnapshot:       window.AccountSnapshot,
+		AuthLabelSnapshot:     window.AuthLabelSnapshot,
+		Source:                window.Source,
+	}
 }
 
 func accountWindowQueryKey(window AccountWindowUsageQuery) string {
@@ -1704,16 +1821,8 @@ func accountWindowQueryKey(window AccountWindowUsageQuery) string {
 func accountWindowQueryKeys(window AccountWindowUsageQuery) (string, string) {
 	accountKey := accountWindowQueryKey(window)
 	legacyAccountKey := accountKey
-	provider := strings.TrimSpace(strings.ToLower(strings.ReplaceAll(window.AuthProviderSnapshot, "_", "-")))
-	if provider == "codex" && (strings.TrimSpace(window.AuthAccountIDSnapshot) != "" || usageidentity.CodexAccountIDFromSnapshot(window.AuthProjectIDSnapshot) != "") {
-		if key, valid := usageidentity.LegacyAccountKey(usageidentity.Fields{
-			AuthFileSnapshot:     window.AuthFileSnapshot,
-			AuthIndex:            window.AuthIndex,
-			AuthProviderSnapshot: window.AuthProviderSnapshot,
-			AccountSnapshot:      window.AccountSnapshot,
-			AuthLabelSnapshot:    window.AuthLabelSnapshot,
-			Source:               window.Source,
-		}); valid {
+	if window.LegacyAccountKeyChecked {
+		if key := strings.TrimSpace(window.LegacyAccountKey); key != "" {
 			legacyAccountKey = key
 		}
 	}

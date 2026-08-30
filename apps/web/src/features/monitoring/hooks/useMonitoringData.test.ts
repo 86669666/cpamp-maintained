@@ -498,6 +498,26 @@ describe('buildMonitoringAuthMetaMap', () => {
     expect(map.get('current-auth-index')?.account).toBe('alice@example.com');
     expect(map.get('6bf749cb7db0e15c')?.account).toBe('alice@example.com');
   });
+
+  it('resolves plan metadata from outer and camel-case token fields', () => {
+    const map = buildMonitoringAuthMetaMap([
+      {
+        name: 'codex.json',
+        provider: 'codex',
+        authIndex: 'codex-auth-index',
+        plan_type: 'pro',
+      },
+      {
+        name: 'claude.json',
+        provider: 'claude',
+        authIndex: 'claude-auth-index',
+        id_token: { planType: 'plan_max' },
+      },
+    ]);
+
+    expect(map.get('codex-auth-index')?.planType).toBe('pro');
+    expect(map.get('claude-auth-index')?.planType).toBe('plan_max');
+  });
 });
 
 describe('buildApiKeyDisplayMap', () => {

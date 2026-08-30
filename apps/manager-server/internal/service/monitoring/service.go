@@ -1396,7 +1396,10 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 		return AccountHistoryResponse{}, err
 	}
 
-	keys := make([]string, 0, len(req.Accounts))
+	keys := make([]string, 0, len(req.Accounts)*2)
+	stableKeys := make([]string, 0, len(req.Accounts))
+	legacyAliases := make(map[string]string)
+	legacyConflicts := make(map[string]struct{})
 	targetKeys := make([]string, len(req.Accounts))
 	validTargets := make([]bool, len(req.Accounts))
 	latestRequestTargets := make([]store.LatestAccountRequestQuery, 0, len(req.Accounts))
@@ -1406,6 +1409,25 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 		validTargets[index] = valid
 		if valid {
 			keys = append(keys, key)
+			stableKeys = append(stableKeys, key)
+			legacyKey, allowed, err := s.store.UsageEvents.ResolveCodexLegacyAccountKey(ctx, accountHistoryIdentityFields(account))
+			if err != nil {
+				return AccountHistoryResponse{}, err
+			}
+			if allowed && legacyKey != "" && legacyKey != key {
+				keys = append(keys, legacyKey)
+				if _, conflicted := legacyConflicts[legacyKey]; conflicted {
+					continue
+				}
+				if owner, exists := legacyAliases[legacyKey]; exists && owner != key {
+					// A blank-ID legacy bucket cannot be assigned to two stable
+					// accounts in one request. Keep both targets fail-closed.
+					delete(legacyAliases, legacyKey)
+					legacyConflicts[legacyKey] = struct{}{}
+				} else {
+					legacyAliases[legacyKey] = key
+				}
+			}
 		}
 		if latestAccountRequestTargetValid(account) {
 			latestRequestTargets = append(latestRequestTargets, store.LatestAccountRequestQuery{
@@ -1415,20 +1437,44 @@ func (s *Service) accountHistory(ctx context.Context, req AccountHistoryRequest)
 			})
 		}
 	}
-	pricingSnapshot, err := s.store.LoadUsagePricingAccountSnapshot(ctx, keys)
+	keys = uniqueAccountHistoryKeys(keys)
+	stableKeys = uniqueAccountHistoryKeys(stableKeys)
+	loadTotals := func(readKeys []string) (map[string]*accountHistoryTotal, error) {
+		pricingSnapshot, err := s.store.LoadUsagePricingAccountSnapshot(ctx, readKeys)
+		if err != nil {
+			return nil, err
+		}
+		prices := pricingSnapshot.Prices
+		if pricingSnapshot.Available {
+			return buildPricingAccountHistoryTotals(pricingSnapshot.Rows, prices), nil
+		}
+		rows, err := s.store.AccountHistoryRollupRows(ctx, readKeys)
+		if err != nil {
+			return nil, err
+		}
+		return buildAccountHistoryTotals(rows, prices), nil
+	}
+	totals, err := loadTotals(keys)
 	if err != nil {
 		return AccountHistoryResponse{}, err
 	}
-	prices := pricingSnapshot.Prices
-	var totals map[string]*accountHistoryTotal
-	if pricingSnapshot.Available {
-		totals = buildPricingAccountHistoryTotals(pricingSnapshot.Rows, prices)
-	} else {
-		rows, err := s.store.AccountHistoryRollupRows(ctx, keys)
-		if err != nil {
-			return AccountHistoryResponse{}, err
+	mergeAliasedAccountHistoryTotals(totals, legacyAliases)
+	if len(legacyAliases) > 0 {
+		fencedLatestID, fenceErr := s.store.LatestUsageEventID(ctx)
+		if fenceErr != nil {
+			return AccountHistoryResponse{}, fenceErr
 		}
-		totals = buildAccountHistoryTotals(rows, prices)
+		if fencedLatestID != latestID {
+			// A writer raced the identity check. Do not expose a possibly
+			// conflicting legacy bucket from the old snapshot; stable events are
+			// still safe and the next refresh will pick up the new tail.
+			latestID = fencedLatestID
+			legacyAliases = nil
+			totals, err = loadTotals(stableKeys)
+			if err != nil {
+				return AccountHistoryResponse{}, err
+			}
+		}
 	}
 	recentRequests, err := s.store.RecentAccountRequests(
 		ctx,
@@ -3610,6 +3656,36 @@ func accountHistoryTargetKey(target AccountHistoryTarget) (string, bool) {
 	return key, key != ""
 }
 
+func accountHistoryIdentityFields(target AccountHistoryTarget) usageidentity.Fields {
+	return usageidentity.Fields{
+		AuthFileSnapshot:      target.AuthFileSnapshot,
+		AuthIndex:             target.AuthIndex,
+		AuthProviderSnapshot:  target.AuthProviderSnapshot,
+		AuthAccountIDSnapshot: target.AuthAccountIDSnapshot,
+		AuthProjectIDSnapshot: target.AuthProjectIDSnapshot,
+		AccountSnapshot:       target.AccountSnapshot,
+		AuthLabelSnapshot:     target.AuthLabelSnapshot,
+		Source:                target.Source,
+	}
+}
+
+func uniqueAccountHistoryKeys(keys []string) []string {
+	seen := make(map[string]struct{}, len(keys))
+	result := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
+}
+
 func latestAccountRequestTargetValid(target AccountHistoryTarget) bool {
 	return accountHistoryAuthFileSnapshot(target) != ""
 }
@@ -3719,6 +3795,33 @@ func buildPricingAccountHistoryTotals(rows []store.UsagePricingAccountRow, price
 		}
 	}
 	return totals
+}
+
+func mergeAliasedAccountHistoryTotals(totals map[string]*accountHistoryTotal, aliases map[string]string) {
+	for legacyKey, primaryKey := range aliases {
+		legacy := totals[legacyKey]
+		if legacy == nil {
+			continue
+		}
+		primary := totals[primaryKey]
+		if primary == nil {
+			totals[primaryKey] = legacy
+			delete(totals, legacyKey)
+			continue
+		}
+		primary.requests += legacy.requests
+		primary.successCalls += legacy.successCalls
+		primary.failureCalls += legacy.failureCalls
+		primary.totalTokens += legacy.totalTokens
+		primary.cost += legacy.cost
+		if primary.firstSeenMS == 0 || (legacy.firstSeenMS > 0 && legacy.firstSeenMS < primary.firstSeenMS) {
+			primary.firstSeenMS = legacy.firstSeenMS
+		}
+		if legacy.lastSeenMS > primary.lastSeenMS {
+			primary.lastSeenMS = legacy.lastSeenMS
+		}
+		delete(totals, legacyKey)
+	}
 }
 
 func accountWindowUsageTargetKey(target AccountWindowUsageTarget) (string, bool) {

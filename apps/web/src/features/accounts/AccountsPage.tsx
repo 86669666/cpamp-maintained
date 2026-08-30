@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, MouseEvent as ReactMouseEvent, SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
-import type { TFunction } from 'i18next';
 import { useLocation, useNavigate, type BlockerFunction } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/Button';
@@ -45,7 +44,9 @@ import {
   KIMI_CONFIG,
   XAI_CONFIG,
   buildObservedCodexQuotaState,
+  refreshQuotaWithConfig,
   type QuotaConfig,
+  type QuotaSetter,
 } from '@/components/quota';
 import { buildQuotaFailureState, getScopedQuotaState } from '@/components/quota/quotaConfigs';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
@@ -81,9 +82,7 @@ import {
   createCodexReauthTargetFromAuthFile,
   type CodexReauthTarget,
 } from '@/features/oauth/codexReauthModel';
-import {
-  runCredentialVisibilityRetry,
-} from '@/features/accounts/model/accountCredentialVisibilityRetry';
+import { runCredentialVisibilityRetry } from '@/features/accounts/model/accountCredentialVisibilityRetry';
 import {
   ACCOUNT_CODEX_STATUS_FILTERS,
   buildAccountInspectionBySelectionKey,
@@ -93,6 +92,8 @@ import {
   findAccountRowForInspectionTarget,
   filterAccountRows,
   getHandledAccountInspectionResultKeys,
+  getPlanOptionLabel,
+  getPlanOptionValue,
   getPlanOptions,
   getProviderOptions,
   isAccountCodexStatusFilter,
@@ -268,7 +269,6 @@ import {
   consumeCodexRateLimitResetCredit,
   monitoringAnalyticsApi,
   usageServiceApi,
-  type AuthFilesApiRequestScope,
   type AccountActionCandidate,
   type AccountQuotaSnapshotObservationInput,
   type AccountQuotaSnapshotWriteEntry,
@@ -326,9 +326,6 @@ import type {
 } from '@/features/monitoring/model/credentialInspectionSnapshot';
 import { getServerCredentialMutationSyncKey } from '@/features/monitoring/model/credentialInspectionSnapshot';
 import styles from './AccountsPage.module.scss';
-
-type QuotaUpdater<T> = T | ((prev: T) => T);
-type QuotaSetter<T> = (updater: QuotaUpdater<Record<string, T>>) => void;
 
 const MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER = 1;
 const MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS = 3;
@@ -870,59 +867,6 @@ const getRemainingBarClass = (row: AccountRow) => {
   if (row.quota.status === 'ok') return styles.quotaBarGood;
   return styles.quotaBarNeutral;
 };
-
-async function refreshQuotaWithConfig<TState, TData>({
-  config,
-  file,
-  setQuota,
-  t,
-  isCurrent,
-  requestScope,
-}: {
-  config: QuotaConfig<TState, TData>;
-  file: AuthFileItem;
-  setQuota: QuotaSetter<TState>;
-  t: TFunction;
-  isCurrent: () => boolean;
-  requestScope?: AuthFilesApiRequestScope;
-}) {
-  const storeKey = config.getStoreKey?.(file) ?? file.name;
-  const cacheGeneration = captureQuotaCacheGeneration();
-  try {
-    const data = await config.fetchQuota(file, t, requestScope);
-    if (!isCurrent()) return null;
-    const committed = commitIfQuotaCacheCurrent(cacheGeneration, () => {
-      setQuota((prev) => ({
-        ...prev,
-        [storeKey]: config.buildSuccessState(data, file),
-      }));
-    });
-    return committed ? data : null;
-  } catch (error: unknown) {
-    if (!isCurrent()) return null;
-    const message = error instanceof Error ? error.message : t('common.unknown_error');
-    const status =
-      typeof error === 'object' && error !== null && 'status' in error
-        ? Number((error as { status?: unknown }).status)
-        : undefined;
-    commitIfQuotaCacheCurrent(cacheGeneration, () => {
-      setQuota((prev) => {
-        const previousState = getScopedQuotaState(config, prev, file);
-        return {
-          ...prev,
-          [storeKey]: buildQuotaFailureState(
-            config,
-            message,
-            Number.isFinite(status) ? status : undefined,
-            file,
-            previousState
-          ),
-        };
-      });
-    });
-    return null;
-  }
-}
 
 export function AccountsPage() {
   const { t, i18n } = useTranslation();
@@ -1575,19 +1519,20 @@ export function AccountsPage() {
     async (options: { force?: boolean } = {}) => {
       const force = options.force === true;
       const synchronizationScopeKey = credentialEvidenceScopeKey;
-      const markers = listAccountCredentialMutationMarkers(connectionFingerprint).filter((marker) => {
-        if (consumedCredentialMutationMarkerIdsRef.current.has(marker.id)) return false;
-        if (force) return true;
-        const currentEvidence = JSON.stringify(
-          createAccountCredentialMutationBaseline(files, marker.provider)
-        );
-        const exhaustedEvidence = credentialMutationMarkerExhaustedRef.current.get(marker.id);
-        return exhaustedEvidence !== `${synchronizationScopeKey}\u001e${currentEvidence}`;
-      });
-      if (markers.length === 0) return false;
-      const pendingSynchronization = credentialMutationMarkerSynchronizationsRef.current.get(
-        synchronizationScopeKey
+      const markers = listAccountCredentialMutationMarkers(connectionFingerprint).filter(
+        (marker) => {
+          if (consumedCredentialMutationMarkerIdsRef.current.has(marker.id)) return false;
+          if (force) return true;
+          const currentEvidence = JSON.stringify(
+            createAccountCredentialMutationBaseline(files, marker.provider)
+          );
+          const exhaustedEvidence = credentialMutationMarkerExhaustedRef.current.get(marker.id);
+          return exhaustedEvidence !== `${synchronizationScopeKey}\u001e${currentEvidence}`;
+        }
       );
+      if (markers.length === 0) return false;
+      const pendingSynchronization =
+        credentialMutationMarkerSynchronizationsRef.current.get(synchronizationScopeKey);
       if (pendingSynchronization) return pendingSynchronization;
 
       const synchronization = (async () => {
@@ -2952,11 +2897,12 @@ export function AccountsPage() {
       let firstAttempt = true;
       const retry = await runCredentialVisibilityRetry<AuthFileItem[]>({
         load: async () => {
-          const loadedFiles = firstAttempt && options.reload === false
-            ? files
-            : firstAttempt
-              ? await reloadInspectionCredentialArtifacts({ requireSuccessfulReload: true })
-              : await loadFiles({ throwOnError: true });
+          const loadedFiles =
+            firstAttempt && options.reload === false
+              ? files
+              : firstAttempt
+                ? await reloadInspectionCredentialArtifacts({ requireSuccessfulReload: true })
+                : await loadFiles({ throwOnError: true });
           firstAttempt = false;
           if (!loadedFiles) throw new Error(t('notification.refresh_failed'));
           return loadedFiles;
@@ -2992,13 +2938,7 @@ export function AccountsPage() {
       });
       return result;
     },
-    [
-      credentialEvidenceScopeKey,
-      files,
-      loadFiles,
-      reloadInspectionCredentialArtifacts,
-      t,
-    ]
+    [credentialEvidenceScopeKey, files, loadFiles, reloadInspectionCredentialArtifacts, t]
   );
 
   const synchronizePendingAccountDirectReauths = useCallback(
@@ -3751,7 +3691,27 @@ export function AccountsPage() {
     [actionCandidatesByRowKey, quotaCooldownsByRowKey, requestEvidenceBySelectionKey, rows]
   );
   const providerOptions = useMemo(() => getProviderOptions(rows), [rows]);
-  const planOptions = useMemo(() => getPlanOptions(rows), [rows]);
+  const planOptions = useMemo(() => getPlanOptions(rows, t), [rows, t]);
+  const planFilterValue = useMemo(
+    () => getPlanOptionValue(rows, planFilter, t),
+    [planFilter, rows, t]
+  );
+  const effectivePlanOptions = useMemo(() => {
+    if (
+      planFilterValue === 'all' ||
+      planOptions.some((option) => option.value === planFilterValue)
+    ) {
+      return planOptions;
+    }
+
+    return [
+      ...planOptions,
+      {
+        value: planFilterValue,
+        label: getPlanOptionLabel(rows, planFilterValue, t),
+      },
+    ];
+  }, [planFilterValue, planOptions, rows, t]);
   const recommendations = useMemo(
     () => buildAccountRecommendations(rows, requestEvidenceBySelectionKey),
     [requestEvidenceBySelectionKey, rows]
@@ -3765,7 +3725,7 @@ export function AccountsPage() {
       filterAccountRows(rows, {
         provider: providerFilter,
         status: statusFilter,
-        plan: planFilter,
+        plan: planFilterValue,
         quotaBand: quotaBandFilter,
         search,
         codexStatusBySelectionKey,
@@ -3773,7 +3733,7 @@ export function AccountsPage() {
       }),
     [
       codexStatusBySelectionKey,
-      planFilter,
+      planFilterValue,
       providerFilter,
       quotaBandFilter,
       requestEvidenceBySelectionKey,
@@ -5429,7 +5389,8 @@ export function AccountsPage() {
       if (row.runtimeOnly) return false;
       const refreshWithConfig = <TState, TData>(
         config: QuotaConfig<TState, TData>,
-        setQuota: QuotaSetter<TState>
+        setQuota: QuotaSetter<TState>,
+        currentState?: TState
       ) => {
         const storeKey = config.getStoreKey?.(row.raw) ?? row.fileName;
         return refreshQuotaWithConfig({
@@ -5442,13 +5403,18 @@ export function AccountsPage() {
             `${config.type}:${storeKey}`
           ),
           requestScope: authFilesRequestScope,
+          currentState,
         });
       };
       switch (row.provider) {
         case CODEX_CONFIG.type: {
-          const data = await refreshWithConfig(CODEX_CONFIG, setCodexQuota);
-          if (!data) return false;
-          const refreshedQuota = CODEX_CONFIG.buildSuccessState(data, row.raw);
+          const result = await refreshWithConfig(
+            CODEX_CONFIG,
+            setCodexQuota,
+            getScopedQuotaState(CODEX_CONFIG, baseQuotaStores.codexQuota, row.raw)
+          );
+          if (!result || result.status !== 'success') return false;
+          const refreshedQuota = result.state;
           const healthyQuota = isKnownHealthyCodexQuota(refreshedQuota);
           invalidateCodexCredentialStatusForSelectionKeys([row.selectionKey], {
             supersedeAuthenticationActionEvidence: true,
@@ -5458,17 +5424,44 @@ export function AccountsPage() {
           return true;
         }
         case CLAUDE_CONFIG.type:
-          return Boolean(await refreshWithConfig(CLAUDE_CONFIG, setClaudeQuota));
+          return (
+            (
+              await refreshWithConfig(
+                CLAUDE_CONFIG,
+                setClaudeQuota,
+                getScopedQuotaState(CLAUDE_CONFIG, baseQuotaStores.claudeQuota, row.raw)
+              )
+            )?.status === 'success'
+          );
         case ANTIGRAVITY_CONFIG.type:
-          return Boolean(await refreshWithConfig(ANTIGRAVITY_CONFIG, setAntigravityQuota));
+          return (
+            (
+              await refreshWithConfig(
+                ANTIGRAVITY_CONFIG,
+                setAntigravityQuota,
+                getScopedQuotaState(ANTIGRAVITY_CONFIG, baseQuotaStores.antigravityQuota, row.raw)
+              )
+            )?.status === 'success'
+          );
         case KIMI_CONFIG.type:
-          return Boolean(await refreshWithConfig(KIMI_CONFIG, setKimiQuota));
+          return (
+            (
+              await refreshWithConfig(
+                KIMI_CONFIG,
+                setKimiQuota,
+                getScopedQuotaState(KIMI_CONFIG, baseQuotaStores.kimiQuota, row.raw)
+              )
+            )?.status === 'success'
+          );
         case XAI_CONFIG.type:
-          return Boolean(
-            await refreshWithConfig<XaiQuotaState, NonNullable<XaiQuotaState['billing']>>(
-              XAI_CONFIG,
-              setXaiQuota
-            )
+          return (
+            (
+              await refreshWithConfig<XaiQuotaState, NonNullable<XaiQuotaState['billing']>>(
+                XAI_CONFIG,
+                setXaiQuota,
+                getScopedQuotaState(XAI_CONFIG, baseQuotaStores.xaiQuota, row.raw)
+              )
+            )?.status === 'success'
           );
         default:
           return false;
@@ -5483,6 +5476,7 @@ export function AccountsPage() {
       setXaiQuota,
       t,
       authFilesRequestScope,
+      baseQuotaStores,
     ]
   );
 
@@ -5518,17 +5512,6 @@ export function AccountsPage() {
           );
           if (!isCurrentBatch()) return;
           const successCount = results.filter(Boolean).length;
-          results.forEach((succeeded, index) => {
-            if (!succeeded) return;
-            const row = taskPlan[index]?.item;
-            if (!row) return;
-            publishAccountCredentialMutationRevision({
-              connectionFingerprint,
-              provider: row.provider,
-              kind: 'quota',
-              credentialIdentity: row.selectionKey,
-            });
-          });
           showNotification(
             t('accounts.quota_refresh_result', {
               success: successCount,
@@ -5966,11 +5949,7 @@ export function AccountsPage() {
         ? t(`auth_files.codex_status_filter_${statusFilter}`)
         : t(`accounts.status_${statusFilter}`);
   const selectedPlanFilterLabel =
-    planFilter === 'all'
-      ? t('accounts.plan_all')
-      : planFilter === 'unknown'
-        ? t('auth_files.codex_plan_filter_unknown')
-        : planFilter;
+    planFilter === 'all' ? t('accounts.plan_all') : getPlanOptionLabel(rows, planFilter, t);
   const selectedQuotaFilterLabel =
     quotaBandFilter === 'all' ? t('accounts.quota_all') : t(`accounts.quota_${quotaBandFilter}`);
   const selectedOperationalFilterLabel = t(`accounts.operational_${effectiveOperationalFilter}`);
@@ -6270,14 +6249,8 @@ export function AccountsPage() {
       </div>
       <div className={styles.filterField}>
         <Select
-          value={planFilter}
-          options={[
-            { value: 'all', label: t('accounts.plan_all') },
-            ...planOptions.map((plan) => ({
-              value: plan,
-              label: plan === 'unknown' ? t('auth_files.codex_plan_filter_unknown') : plan,
-            })),
-          ]}
+          value={planFilterValue}
+          options={[{ value: 'all', label: t('accounts.plan_all') }, ...effectivePlanOptions]}
           onChange={setPlanFilter}
           ariaLabel={t('accounts.plan_filter')}
           triggerClassName={styles.toolbarSelectTrigger}
@@ -6828,6 +6801,7 @@ export function AccountsPage() {
             const quotaCooldown = quotaCooldownsByRowKey.get(row.selectionKey)?.[0] ?? null;
             const codexStatus = codexStatusBySelectionKey.get(row.selectionKey) ?? null;
             const item = buildAccountListItem(row, {
+              t,
               recommendation,
               quotaCooldown,
               codexStatus,
@@ -6915,8 +6889,13 @@ export function AccountsPage() {
                     <span className={styles.providerPill}>
                       {getProviderLabel(item.identity.provider, t)}
                     </span>
-                    {item.identity.planType ? (
-                      <span className={styles.accountMetaPill}>{item.identity.planType}</span>
+                    {item.identity.planPresentation ? (
+                      <span
+                        className={styles.accountMetaPill}
+                        title={item.identity.planPresentation.fullLabel}
+                      >
+                        {item.identity.planPresentation.shortLabel}
+                      </span>
                     ) : null}
                   </div>
                   <div className={styles.accountIdentityCopyLine}>
@@ -7223,6 +7202,7 @@ export function AccountsPage() {
     const rowEventsRecentFailure = hasMatchingDetailEvents ? detailEventsRecentFailure : null;
     const rowEventsTotalCount = hasMatchingDetailEvents ? detailEventsTotalCount : 0;
     const detailView = buildAccountDetailViewModel(selectedRow, {
+      t,
       recommendation: recommendationBySelectionKey.get(selectedRow.selectionKey) ?? null,
       quotaCooldown: selectedQuotaCooldown,
       codexStatus: selectedCodexStatus,
@@ -7422,7 +7402,11 @@ export function AccountsPage() {
                 {getDisplayAccount(selectedRow)}
               </strong>
               <span className={styles.drawerTitleMeta}>
-                {getProviderLabel(selectedRow.provider, t)} · {selectedRow.planType ?? '-'} ·{' '}
+                {getProviderLabel(selectedRow.provider, t)} ·{' '}
+                <span title={detailView.identity.planPresentation?.fullLabel}>
+                  {detailView.identity.planPresentation?.shortLabel ?? '-'}
+                </span>{' '}
+                ·{' '}
                 <button
                   type="button"
                   className={styles.drawerFileNameCopy}

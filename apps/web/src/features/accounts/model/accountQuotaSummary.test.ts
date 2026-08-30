@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AuthFileItem, CodexQuotaState } from '@/types';
 import { getAuthFileSelectionKey } from '@/features/authFiles/model/credentialStatus';
 import { CODEX_SPARK_MODEL_ID } from '@/utils/quota/codexQuota';
+import { buildQuotaCredentialIdentity } from '@/utils/quota/credentialScope';
 import { resolveAccountQuota, type AccountQuotaStores } from './accountQuotaSummary';
 
 const emptyStores = (): AccountQuotaStores => ({
@@ -108,5 +109,27 @@ describe('resolveAccountQuota', () => {
       remainingPercent: 64,
     });
     expect(summary.observedQuotaAtMs).toBeUndefined();
+  });
+
+  it('uses Antigravity tier metadata when the stored plan is unknown', () => {
+    const file = {
+      name: 'antigravity.json',
+      type: 'antigravity',
+      authIndex: 'auth-1',
+      planType: 'unknown',
+    } as AuthFileItem;
+    const stores = emptyStores();
+    stores.antigravityQuota[file.name] = {
+      ...buildQuotaCredentialIdentity(file),
+      status: 'success',
+      groups: [],
+      subscription: {
+        plan: 'unknown',
+        tierName: 'Antigravity Future',
+        tierId: 'future-tier',
+      },
+    };
+
+    expect(resolveAccountQuota(file, stores).planType).toBe('Antigravity Future');
   });
 });

@@ -13,6 +13,7 @@ import (
 
 type Repository interface {
 	InsertBatch(ctx context.Context, events []model.UsageEvent) (model.InsertResult, error)
+	ResolveCodexLegacyAccountKey(ctx context.Context, fields usageidentity.Fields) (string, bool, error)
 	ListRecent(ctx context.Context, limit int) ([]model.UsageEvent, error)
 	ModelUsageSummary(ctx context.Context, limit int) (model.ModelUsageSummary, error)
 	BackfillResponseMetadata(ctx context.Context, batchLimit int) (int, error)

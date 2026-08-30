@@ -84,6 +84,43 @@ describe('accountQuotaWindowDefinitions', () => {
     ]);
   });
 
+  it('keeps an observation gap outside both lifecycle usage ranges', () => {
+    const [definition] = buildAccountQuotaWindowDefinitions([makeWindow({})], 30_000_000);
+    definition.currentCycle = {
+      id: 2,
+      activationId: 1,
+      state: 'active',
+      scheduledStartMs: 25_000_000,
+      scheduledEndMs: 38_000_000,
+      actualStartMs: 25_000_000,
+      actualEndMs: null,
+      durationSeconds: 18_000,
+      boundaryAccuracy: 'exact',
+      endReason: '',
+      parentCycleId: null,
+      forecastEligible: true,
+    };
+    definition.previousCycle = {
+      id: 1,
+      activationId: 1,
+      state: 'closed',
+      scheduledStartMs: 2_000_000,
+      scheduledEndMs: 20_000_000,
+      actualStartMs: 8_000_000,
+      actualEndMs: 20_000_000,
+      durationSeconds: 18_000,
+      boundaryAccuracy: 'exact',
+      endReason: 'scheduled',
+      parentCycleId: null,
+      forecastEligible: true,
+    };
+
+    expect(buildAccountQuotaUsageRanges(definition, 30_000_000)).toEqual([
+      { period: 'current', fromMs: 25_000_000, toMs: 30_000_000 },
+      { period: 'previous', fromMs: 8_000_000, toMs: 20_000_000 },
+    ]);
+  });
+
   it('does not invent a previous range for the first lifecycle cycle', () => {
     const [definition] = buildAccountQuotaWindowDefinitions([makeWindow({})], 30_000_000);
     definition.currentCycle = {

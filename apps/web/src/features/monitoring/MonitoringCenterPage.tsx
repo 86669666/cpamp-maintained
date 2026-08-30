@@ -40,7 +40,10 @@ import {
   type AccountSortState,
   type MonitoringAccountOverviewMode,
 } from '@/features/monitoring/accountOverviewState';
-import { buildMonitoringAccountQuotaTargetsByRowId } from '@/features/monitoring/accountOverviewQuotaTargets';
+import {
+  buildMonitoringAccountQuotaTargetsByRowId,
+  type MonitoringAccountQuotaTarget,
+} from '@/features/monitoring/accountOverviewQuotaTargets';
 import {
   AccountExpandedDetails,
   AccountOverviewCard,
@@ -74,13 +77,27 @@ import {
 } from '@/features/monitoring/components/RealtimeEventsPanel';
 import { type AccountQuotaState } from '@/features/monitoring/components/accountOverviewPresentation';
 import {
+  ANTIGRAVITY_CONFIG,
+  CLAUDE_CONFIG,
+  CODEX_CONFIG,
+  KIMI_CONFIG,
+  XAI_CONFIG,
+  refreshQuotaWithConfig,
+  type QuotaConfig,
+  type QuotaRefreshResult,
+  type QuotaSetter,
+} from '@/components/quota';
+import {
   buildAccountOptions,
   buildAccountOverviewColumns,
   buildAccountSortOptions,
   buildApiKeyOptionsFromRows,
   buildApiKeyOverviewColumns,
   buildAuthFilesByAuthIndex,
+  buildAccountQuotaErrorEntry,
+  buildAccountQuotaEntryFromProviderState,
   buildAccountQuotaRefreshFailureEntry,
+  buildCachedAccountQuotaEntry,
   buildObservedCodexAccountQuotaEntry,
   buildChannelOptionsFromValues,
   buildMonitoringInitialStateFromQuery,
@@ -95,11 +112,13 @@ import {
   getCurrentInputValue,
   getTodayStartInputValue,
   isUsageImportFile,
+  mergeSharedAccountQuotaState,
   mergeObservedAccountQuotaState,
   parseDateTimeLocalValue,
-  requestAccountQuota,
   updateMonitoringAccountQuotaStateByRowId,
   type FocusSnapshot,
+  type MonitoringProviderQuotaState,
+  type MonitoringQuotaStores,
   type StatusFilter,
 } from '@/features/monitoring/model/monitoringCenterPageModel';
 import { resolveMonitoringDimensionCounts } from '@/features/monitoring/model/monitoringAnalyticsModel';
@@ -119,7 +138,7 @@ import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useInterval } from '@/hooks/useInterval';
 import { useRequestMonitoringAvailability } from '@/hooks/useRequestMonitoringAvailability';
 import { isFileLogsAvailable } from '@/features/logs/logFeatureAvailability';
-import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
+import { useAuthStore, useConfigStore, useNotificationStore, useQuotaStore } from '@/stores';
 import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
 import { useAccountCredentialMutationRevisionStore } from '@/stores/useAccountCredentialMutationRevisionStore';
 import { createCodexInspectionConnectionFingerprint } from '@/features/monitoring/codexInspection';
@@ -137,6 +156,10 @@ import {
   filterFreshUsageHeaderQuotaSnapshots,
   getHighConfidenceUsageHeaderSnapshotForAuthFile,
 } from '@/utils/usageHeaderSnapshots';
+import {
+  getCredentialScopedQuotaState,
+  getQuotaCredentialStoreKey,
+} from '@/utils/quota/credentialScope';
 import { buildSourceInfoMap, buildSourceProviderStateMap } from '@/utils/sourceResolver';
 import styles from './MonitoringCenterPage.module.scss';
 
@@ -146,6 +169,12 @@ const MAX_CONCURRENT_ACCOUNT_QUOTA_PROVIDERS = 3;
 const MAX_CONCURRENT_ACCOUNT_QUOTA_REQUESTS_PER_PROVIDER = 1;
 const DATABASE_MAINTENANCE_LONG_RANGE_MS = 7 * 24 * 60 * 60 * 1000;
 const CREDENTIAL_MUTATION_COVERAGE_RETRY_DELAYS_MS = [0, 1_000, 2_000, 4_000, 8_000] as const;
+
+type MonitoringQuotaRefreshResult = {
+  status: 'success' | 'error';
+  state: MonitoringProviderQuotaState;
+  error?: string;
+};
 
 const DEFAULT_ACCOUNT_PAGE_SIZE = ACCOUNT_OVERVIEW_TABLE_PAGE_SIZE_OPTIONS[0];
 const EMPTY_STATUS_BAR_DATA: StatusBarData = {
@@ -170,6 +199,7 @@ export function MonitoringCenterPage() {
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const apiBase = useAuthStore((state) => state.apiBase);
   const managementKey = useAuthStore((state) => state.managementKey);
+  const quotaRequestScope = useMemo(() => ({ apiBase, managementKey }), [apiBase, managementKey]);
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
   const requestMonitoringAvailability = useRequestMonitoringAvailability();
@@ -237,6 +267,26 @@ export function MonitoringCenterPage() {
   );
   const headerSnapshots = useUsageHeaderSnapshotStore((state) => state.items);
   const headerSnapshotGeneratedAtMs = useUsageHeaderSnapshotStore((state) => state.generatedAtMs);
+  const antigravityQuota = useQuotaStore((state) => state.antigravityQuota);
+  const claudeQuota = useQuotaStore((state) => state.claudeQuota);
+  const codexQuota = useQuotaStore((state) => state.codexQuota);
+  const kimiQuota = useQuotaStore((state) => state.kimiQuota);
+  const xaiQuota = useQuotaStore((state) => state.xaiQuota);
+  const sharedQuotaStores = useMemo<MonitoringQuotaStores>(
+    () => ({
+      antigravityQuota,
+      claudeQuota,
+      codexQuota,
+      kimiQuota,
+      xaiQuota,
+    }),
+    [antigravityQuota, claudeQuota, codexQuota, kimiQuota, xaiQuota]
+  );
+  const setAntigravityQuota = useQuotaStore((state) => state.setAntigravityQuota);
+  const setClaudeQuota = useQuotaStore((state) => state.setClaudeQuota);
+  const setCodexQuota = useQuotaStore((state) => state.setCodexQuota);
+  const setKimiQuota = useQuotaStore((state) => state.setKimiQuota);
+  const setXaiQuota = useQuotaStore((state) => state.setXaiQuota);
   const [selectedAccount, setSelectedAccount] = useState(
     () => initialMonitoringCenterUiState.current.selectedAccount
   );
@@ -586,11 +636,8 @@ export function MonitoringCenterPage() {
           setCredentialMutationRefreshKick((current) => current + 1);
           return;
         }
-        const fullyCovered = !Object.entries(
-          requestedCredentialMutationRevisionsRef.current
-        ).some(
-          ([key, revision]) =>
-            revision > (coveredCredentialMutationRevisionsRef.current[key] ?? 0)
+        const fullyCovered = !Object.entries(requestedCredentialMutationRevisionsRef.current).some(
+          ([key, revision]) => revision > (coveredCredentialMutationRevisionsRef.current[key] ?? 0)
         );
         if (fullyCovered) {
           consumeProvidersForQuota();
@@ -991,6 +1038,10 @@ export function MonitoringCenterPage() {
     rowIds.forEach((rowId) => {
       const state = accountQuotaStatesByRowId[rowId];
       const targets = accountQuotaTargetsByRowId.get(rowId) ?? [];
+      const sharedEntries = targets
+        .map((target) => buildCachedAccountQuotaEntry(target, sharedQuotaStores, t))
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+      const stateWithSharedQuota = mergeSharedAccountQuotaState(state, targets, sharedEntries);
       const observedEntries = targets
         .map((target) =>
           buildObservedCodexAccountQuotaEntry(
@@ -1000,12 +1051,22 @@ export function MonitoringCenterPage() {
           )
         )
         .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
-      const nextState = mergeObservedAccountQuotaState(state, targets, observedEntries);
+      const nextState = mergeObservedAccountQuotaState(
+        stateWithSharedQuota,
+        targets,
+        observedEntries
+      );
       if (nextState) nextStates[rowId] = nextState;
       changed = changed || nextState !== state;
     });
     return changed ? nextStates : accountQuotaStatesByRowId;
-  }, [accountQuotaStatesByRowId, accountQuotaTargetsByRowId, headerSnapshotLookup, t]);
+  }, [
+    accountQuotaStatesByRowId,
+    accountQuotaTargetsByRowId,
+    headerSnapshotLookup,
+    sharedQuotaStores,
+    t,
+  ]);
 
   const hasSearchFilter = Boolean(deferredSearch.trim());
   const hasScopeFilter =
@@ -1226,6 +1287,83 @@ export function MonitoringCenterPage() {
     });
   }, []);
 
+  const refreshQuotaForTarget = useCallback(
+    async (
+      target: MonitoringAccountQuotaTarget,
+      isCurrent: () => boolean
+    ): Promise<MonitoringQuotaRefreshResult | null> => {
+      const run = async <TState, TData>(
+        config: QuotaConfig<TState, TData>,
+        setQuota: QuotaSetter<TState>,
+        currentState: TState | undefined
+      ): Promise<MonitoringQuotaRefreshResult | null> => {
+        const result: QuotaRefreshResult<TState, TData> | null = await refreshQuotaWithConfig({
+          config,
+          file: target.file,
+          setQuota,
+          t,
+          isCurrent,
+          requestScope: quotaRequestScope,
+          currentState,
+        });
+        if (!result) return null;
+        return result.status === 'error'
+          ? {
+              status: 'error',
+              state: result.state as MonitoringProviderQuotaState,
+              error: result.error,
+            }
+          : {
+              status: 'success',
+              state: result.state as MonitoringProviderQuotaState,
+            };
+      };
+
+      switch (target.provider) {
+        case 'antigravity':
+          return run(
+            ANTIGRAVITY_CONFIG,
+            setAntigravityQuota,
+            getCredentialScopedQuotaState(sharedQuotaStores.antigravityQuota, target.file)
+          );
+        case 'claude':
+          return run(
+            CLAUDE_CONFIG,
+            setClaudeQuota,
+            getCredentialScopedQuotaState(sharedQuotaStores.claudeQuota, target.file)
+          );
+        case 'codex':
+          return run(
+            CODEX_CONFIG,
+            setCodexQuota,
+            getCredentialScopedQuotaState(sharedQuotaStores.codexQuota, target.file)
+          );
+        case 'kimi':
+          return run(
+            KIMI_CONFIG,
+            setKimiQuota,
+            getCredentialScopedQuotaState(sharedQuotaStores.kimiQuota, target.file)
+          );
+        case 'xai':
+          return run(
+            XAI_CONFIG,
+            setXaiQuota,
+            getCredentialScopedQuotaState(sharedQuotaStores.xaiQuota, target.file)
+          );
+      }
+    },
+    [
+      quotaRequestScope,
+      sharedQuotaStores,
+      setAntigravityQuota,
+      setClaudeQuota,
+      setCodexQuota,
+      setKimiQuota,
+      setXaiQuota,
+      t,
+    ]
+  );
+
   const loadAccountQuota = useCallback(
     (rowId: string, force: boolean = false): Promise<void> => {
       const currentState = accountQuotaStatesByRowIdRef.current[rowId];
@@ -1236,10 +1374,14 @@ export function MonitoringCenterPage() {
       if (accountQuotaRefreshQueue.isPending(requestKey)) {
         return accountQuotaRefreshQueue.run(requestKey, async () => undefined);
       }
-      const previousEntriesByKey =
-        currentState?.targetKey === targetKey
-          ? new Map(currentState.entries.map((entry) => [entry.key, entry]))
-          : new Map();
+      const cachedEntries = targets
+        .map((target) => buildCachedAccountQuotaEntry(target, sharedQuotaStores, t))
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+      const previousEntriesByKey = new Map(cachedEntries.map((entry) => [entry.key, entry]));
+      if (currentState?.targetKey === targetKey) {
+        currentState.entries.forEach((entry) => previousEntriesByKey.set(entry.key, entry));
+      }
+      const previousEntries = Array.from(previousEntriesByKey.values());
       const observedEntries = targets
         .map((target) =>
           buildObservedCodexAccountQuotaEntry(
@@ -1271,7 +1413,7 @@ export function MonitoringCenterPage() {
       commitAccountQuotaState(rowId, {
         status: 'loading',
         targetKey,
-        entries: currentState?.targetKey === targetKey ? currentState.entries : observedEntries,
+        entries: previousEntries.length > 0 ? previousEntries : observedEntries,
         lastRefreshedAt: currentState?.lastRefreshedAt,
       });
 
@@ -1288,7 +1430,7 @@ export function MonitoringCenterPage() {
         }
         const taskPlan = buildProviderCredentialTaskPlan(targets, {
           getProviderKey: (target) => target.provider,
-          getCredentialKey: (target) => target.key,
+          getCredentialKey: (target) => getQuotaCredentialStoreKey(target.file),
         });
         const settled = await runProviderCredentialTaskPlan(
           taskPlan,
@@ -1302,7 +1444,7 @@ export function MonitoringCenterPage() {
                 target,
                 result: {
                   status: 'fulfilled' as const,
-                  value: await requestAccountQuota(target, t),
+                  value: await refreshQuotaForTarget(target, isCurrentRequest),
                 },
               };
             } catch (reason: unknown) {
@@ -1317,12 +1459,50 @@ export function MonitoringCenterPage() {
           }
         );
         if (!isCurrentRequest()) return;
+        if (settled.some(({ result }) => result.status === 'fulfilled' && result.value === null)) {
+          return;
+        }
 
-        const hasFailure = settled.some(({ result }) => result.status === 'rejected');
+        const hasFailure = settled.some(
+          ({ result }) =>
+            result.status === 'rejected' ||
+            (result.status === 'fulfilled' && result.value?.status === 'error')
+        );
         const completedAtMs = Date.now();
         const entries = settled.map(({ result, target: fallback }) => {
           if (result.status === 'fulfilled') {
-            return result.value;
+            const refreshResult = result.value;
+            if (!refreshResult) {
+              return (
+                previousEntriesByKey.get(fallback.key) ??
+                buildAccountQuotaErrorEntry(fallback, t('common.unknown_error'), t)
+              );
+            }
+            const providerEntry = buildAccountQuotaEntryFromProviderState(
+              fallback,
+              refreshResult.state,
+              t
+            );
+            if (refreshResult.status === 'success') {
+              return (
+                providerEntry ??
+                previousEntriesByKey.get(fallback.key) ??
+                buildAccountQuotaErrorEntry(fallback, t('common.unknown_error'), t)
+              );
+            }
+            const observedEntry = buildObservedCodexAccountQuotaEntry(
+              fallback,
+              getHighConfidenceUsageHeaderSnapshotForAuthFile(headerSnapshotLookup, fallback.file),
+              t
+            );
+            return buildAccountQuotaRefreshFailureEntry(
+              fallback,
+              refreshResult.error || t('common.unknown_error'),
+              t,
+              previousEntriesByKey.get(fallback.key) ?? providerEntry ?? undefined,
+              observedEntry,
+              completedAtMs
+            );
           }
 
           const error =
@@ -1362,6 +1542,8 @@ export function MonitoringCenterPage() {
       accountQuotaTargetsByRowId,
       commitAccountQuotaState,
       headerSnapshotLookup,
+      refreshQuotaForTarget,
+      sharedQuotaStores,
       t,
     ]
   );

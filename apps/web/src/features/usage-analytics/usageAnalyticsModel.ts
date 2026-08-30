@@ -427,6 +427,7 @@ export type UsageDrilldownEvent = {
   apiKeyLabel: string;
   source: string;
   authIndex: string;
+  provider: string;
   endpoint: string;
   totalTokens: number;
   estimatedCost: number;
@@ -2360,6 +2361,7 @@ export const buildDrilldownPreview = (
       apiKeyLabel: resolveUsageApiKeyLabel(row.api_key_hash || '', apiKeyDisplayMap),
       source: row.source || '',
       authIndex: row.auth_index || '',
+      provider: row.auth_provider_snapshot || row.source || '',
       endpoint: row.endpoint || row.path || '',
       totalTokens,
       estimatedCost: totalTokens * costPerToken,

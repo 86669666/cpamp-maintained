@@ -94,6 +94,23 @@ const makeCodexStatus = (
 });
 
 describe('accountListPresentation', () => {
+  it('attaches compact and full plan presentation to account list identity', () => {
+    const item = buildAccountListItem(
+      makeRow({
+        provider: 'codex',
+        planType: 'self_serve_business_prolite',
+      })
+    );
+
+    expect(item.identity.planPresentation).toMatchObject({
+      rawPlanType: 'self_serve_business_prolite',
+      canonicalPlanType: 'business_premium_5x',
+      shortLabel: 'Business 5x',
+      fullLabel: 'Business Premium 5x',
+      known: true,
+    });
+  });
+
   it('prioritizes re-authentication over quota state', () => {
     const row = makeRow({
       quota: {

@@ -1628,7 +1628,6 @@
     "load_failed": "额度获取失败：{{message}}",
     "missing_auth_index": "认证文件缺少 auth_index",
     "empty_models": "暂无额度数据",
-    "plan_label": "套餐",
     "group_gemini_models": "Gemini 模型",
     "group_claude_gpt_models": "Claude 模型",
     "group_models_description": "此分组包含：{{models}}",
@@ -1655,13 +1654,7 @@
     "error_badge": "套餐不可用",
     "load_failed": "订阅获取失败：{{message}}",
     "missing_auth_index": "认证文件缺少 auth_index",
-    "empty_data": "暂无订阅数据",
-    "plan_badge": "{{plan}}",
-    "plan_free": "免费版",
-    "plan_pro": "Pro",
-    "plan_ultra": "Ultra",
-    "plan_ultra_lite": "Ultra Lite",
-    "plan_unknown": "未知"
+    "empty_data": "暂无订阅数据"
   },
   "claude_quota": {
     "title": "Claude 额度",
@@ -1683,15 +1676,7 @@
     "iguana_necktie": "Iguana Necktie",
     "weekly_scoped_model": "{{model}} 周限额",
     "limit_index": "限额 #{{index}}",
-    "extra_usage_label": "额外用量",
-    "plan_label": "套餐",
-    "plan_unknown": "未知",
-    "plan_free": "免费版",
-    "plan_pro": "专业版",
-    "plan_max": "Max",
-    "plan_max5": "Max 5x",
-    "plan_max20": "Max 20x",
-    "plan_team": "团队版"
+    "extra_usage_label": "额外用量"
   },
   "codex_quota": {
     "title": "Codex 额度",
@@ -1703,7 +1688,7 @@
     "missing_auth_index": "认证文件缺少 auth_index",
     "missing_account_id": "Codex 凭证缺少 ChatGPT 账号 ID",
     "empty_windows": "暂无额度数据",
-    "no_access": "该凭证已无 Codex 访问权限（free）。",
+    "no_access": "该凭证已无 Codex 访问权限。",
     "refresh_button": "刷新额度",
     "retry_button": "重试",
     "fetch_all": "获取全部",
@@ -1765,13 +1750,7 @@
     "additional_monthly_window": "{{name}} 月限额",
     "additional_generic_window": "{{name}} {{duration}} 限额",
     "window_usage": "已用 {{used}} / {{total}} 小时",
-    "window_usage_duration": "已用 {{used}} / {{total}}",
-    "plan_label": "套餐",
-    "plan_plus": "Plus",
-    "plan_team": "Team",
-    "plan_free": "Free",
-    "plan_pro": "Pro 20x",
-    "plan_prolite": "Pro 5x"
+    "window_usage_duration": "已用 {{used}} / {{total}}"
   },
   "kimi_quota": {
     "title": "Kimi 额度",
@@ -1833,9 +1812,6 @@
     "used_percent": "已用 {{percent}}",
     "reset_at": "重置 {{time}}",
     "product_usage": "{{product}} 使用",
-    "plan_label": "套餐",
-    "plan_supergrok": "SuperGrok",
-    "plan_supergrok_heavy": "SuperGrok Heavy",
     "official_api_plan": "官方 API",
     "official_api_health": "xAI 官方 API 身份可访问；此 OAuth 凭证无法通过该接口获取账单和剩余额度。",
     "pay_as_you_go_label": "按量付费",
@@ -4601,5 +4577,60 @@
       "invalid_json": "JSON 格式无效。"
     },
     "paste_item": "粘贴内容 #{{index}}"
+  },
+  "plans": {
+    "label": "套餐",
+    "codex": {
+      "free": "Free",
+      "go": "Go",
+      "plus": "Plus",
+      "pro_5x": "Pro 5x",
+      "pro_20x": "Pro 20x",
+      "team": "Team",
+      "business": "Business",
+      "business_premium_5x": {
+        "short": "Business 5x",
+        "full": "Business Premium 5x"
+      },
+      "business_usage_based": {
+        "short": "Business PAYG",
+        "full": "Business Usage-based"
+      },
+      "enterprise": "Enterprise",
+      "enterprise_automation": {
+        "short": "Ent. Auto",
+        "full": "Enterprise Automation"
+      },
+      "enterprise_usage_based": {
+        "short": "Ent. PAYG",
+        "full": "Enterprise Usage-based"
+      },
+      "edu": {
+        "short": "Edu",
+        "full": "Education"
+      },
+      "edu_plus": {
+        "short": "Edu Plus",
+        "full": "Education Plus"
+      },
+      "edu_pro": {
+        "short": "Edu Pro",
+        "full": "Education Pro"
+      }
+    },
+    "claude": {
+      "free": "免费版",
+      "pro": "专业版",
+      "max": "Max",
+      "max_5x": "Max 5x",
+      "max_20x": "Max 20x",
+      "team": "团队版"
+    },
+    "antigravity": {
+      "free": "免费版",
+      "pro": "Pro",
+      "ultra": "Ultra",
+      "ultra_lite": "Ultra Lite"
+    }
   }
 }

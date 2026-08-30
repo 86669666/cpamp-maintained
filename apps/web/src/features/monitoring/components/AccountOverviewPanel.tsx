@@ -388,6 +388,7 @@ export function AccountOverviewPanel({
                           expanded={isExpanded}
                           onToggle={() => onToggleExpanded(row.id)}
                           accountDisplayMode={accountDisplayMode}
+                          t={t}
                           statusTone={statusTone}
                         />
                       </td>

@@ -338,6 +338,7 @@ export const buildAccountRows = (rows: MonitoringEventRow[]): MonitoringAccountR
       sourceHashes: Set<string>;
       apiKeyHashes: Set<string>;
       channels: Set<string>;
+      planTypes: Set<string>;
       modelMap: Map<
         string,
         {
@@ -375,8 +376,8 @@ export const buildAccountRows = (rows: MonitoringEventRow[]): MonitoringAccountR
   rows.forEach((row) => {
     const provider = normalizeMonitoringProvider(row.providerIdentity ?? row.provider);
     const filterAccount =
-      [row.accountIdentity, row.authLabelIdentity, row.sourceIdentity, row.account].find(
-        (value) => Boolean(value && isEffectiveLabel(value))
+      [row.accountIdentity, row.authLabelIdentity, row.sourceIdentity, row.account].find((value) =>
+        Boolean(value && isEffectiveLabel(value))
       ) || '';
     const accountKey = buildMonitoringAccountRowId({
       provider,
@@ -398,6 +399,7 @@ export const buildAccountRows = (rows: MonitoringEventRow[]): MonitoringAccountR
       sourceHashes: new Set<string>(),
       apiKeyHashes: new Set<string>(),
       channels: new Set<string>(),
+      planTypes: new Set<string>(),
       modelMap: new Map(),
       rows: [] as MonitoringEventRow[],
       totalCalls: 0,
@@ -424,6 +426,9 @@ export const buildAccountRows = (rows: MonitoringEventRow[]): MonitoringAccountR
     existing.sourceHashes.add(row.sourceHashIdentity ?? '');
     existing.apiKeyHashes.add(row.apiKeyHash);
     existing.channels.add(row.channel);
+    if (row.planType && row.planType !== '-') {
+      existing.planTypes.add(row.planType);
+    }
     existing.totalCalls += 1;
     existing.successCalls += row.failed ? 0 : 1;
     existing.failureCalls += row.failed ? 1 : 0;
@@ -497,6 +502,7 @@ export const buildAccountRows = (rows: MonitoringEventRow[]): MonitoringAccountR
         authIndices,
         sourceKeys,
         channels,
+        planTypes: Array.from(item.planTypes).sort(),
         totalCalls: item.totalCalls,
         successCalls: item.successCalls,
         failureCalls: item.failureCalls,

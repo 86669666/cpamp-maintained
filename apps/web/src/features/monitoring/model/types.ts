@@ -264,6 +264,8 @@ export type MonitoringAccountRow = {
   authIndices: string[];
   sourceKeys?: string[];
   channels: string[];
+  /** Raw provider plan values; presentation is resolved at the UI boundary. */
+  planTypes?: string[];
   totalCalls: number;
   successCalls: number;
   failureCalls: number;

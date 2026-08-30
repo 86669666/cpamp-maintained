@@ -27,6 +27,10 @@ http://<cpa-host>:8317/management.html
 
 CPAMP 轻量面板不会连接或读取 Manager Server SQLite，也没有完整的历史请求监控、模型价格、API 密钥别名、导入导出和服务端巡检历史。
 
+## Usage event ledger contract
+
+`usage_events` 是权威事件账本；派生数据重建不得删除事件行，也不得改写原始 payload 与身份依据。部分有界兼容迁移会原地更新缓存计费规范化字段或解析后的响应元数据字段，以保持历史读取语义一致。因此发布说明将其表述为“权威账本”，而不是“完全不可变”。
+
 ## Manager Server 负责什么
 
 - 托管内置管理面板。
@@ -94,7 +98,7 @@ setup 后：
 
 - 浏览器登录使用 CPAMP 管理员密钥。
 - setup / 面板保存的 CPA Management Key 会在服务端加密保存。
-- 安装器 env/secret 模式下，Manager Server 从部署环境读取 CPA URL 和 CPA Management Key。
+- 手工 env/secret 部署下，Manager Server 从部署环境读取 CPA URL 和 CPA Management Key；一键安装器会把这组输入一次性导入 SQLite 加密配置。
 - Manager Server 使用解析后的 CPA Management Key 访问 CPA。
 - 新浏览器不再需要 CPA Management Key。
 
@@ -359,7 +363,7 @@ data.key
 - 只有 `usage.sqlite` 泄露时，保存的 CPA Management Key 不能直接读取。
 - `usage.sqlite` 和 `data.key` 同时泄露时，保存的 CPA Management Key 可以被解密。
 - `data.key` 丢失后，保存到 SQLite 的 CPA Management Key 无法恢复。
-- 如果 CPA 连接由 env/secret 管理，同时备份安装目录里的 secret 文件。
+- 如果是手工 env/secret 部署，同时备份安装目录里的 secret 文件；一键安装成功后则必须把 SQLite 与 `data.key` 作为一组备份，失败或跳过执行时保留临时 secret 以便重试。
 - 请求元数据可能包含模型名、端点、账号标签、项目快照、Token 用量、延迟和失败摘要。
 - 原始失败 body 只保存在本地 SQLite；普通 API 和 JSONL 导出只暴露脱敏摘要。
 

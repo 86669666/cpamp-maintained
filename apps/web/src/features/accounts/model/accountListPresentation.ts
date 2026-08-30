@@ -1,3 +1,4 @@
+import type { TFunction } from 'i18next';
 import type { QuotaCooldownInfo } from '@/services/api';
 import type { AuthFileCodexStatusSummary } from '@/features/authFiles/model/credentialStatus';
 import type { AccountRow } from './accountRows';
@@ -15,6 +16,7 @@ import {
 import type { UsageValueSource } from './usageValueRows';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
 import { isCodexMainQuotaWindow } from '@/utils/quota/codexQuota';
+import { getPlanPresentation, type PlanPresentation } from '@/utils/plans';
 import {
   classifyAccountCredentialStatusEvidence,
   classifyAccountObservedDiagnosticEvidence,
@@ -96,6 +98,7 @@ export interface AccountListPresentationItem {
     fileName: string;
     provider: string;
     planType: string | null;
+    planPresentation: PlanPresentation | null;
     priority: number;
     priorityIsNegative: boolean;
   };
@@ -142,6 +145,7 @@ export interface AccountListPresentationItem {
 }
 
 export interface AccountListPresentationOptions {
+  t?: TFunction;
   recommendation?: AccountRecommendation | null;
   quotaCooldown?: QuotaCooldownInfo | null;
   estimatedValuePerRequest?: number;
@@ -1173,6 +1177,11 @@ export const buildAccountListItem = (
     accountQuotaWindows,
     options.requestEvidence
   );
+  const planPresentation = getPlanPresentation({
+    provider: row.provider,
+    planType: row.planType,
+    t: options.t,
+  });
 
   return {
     identity: {
@@ -1181,6 +1190,7 @@ export const buildAccountListItem = (
       fileName: row.fileName,
       provider: row.provider,
       planType: row.planType,
+      planPresentation,
       priority: row.priority ?? 0,
       priorityIsNegative: row.priority !== null && row.priority < 0,
     },

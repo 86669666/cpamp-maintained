@@ -23,9 +23,9 @@ import {
   getHeaderSnapshotTraceId,
   hasUsageHeaderDiagnosticSignal,
 } from '@/utils/usageHeaderSnapshots';
-import { resolveCodexPlanType } from '@/utils/quota/resolvers';
 import { getCredentialScopedQuotaState } from '@/utils/quota/credentialScope';
 import { isCodexMainQuotaModelScope, isCodexMainQuotaWindow } from '@/utils/quota/codexQuota';
+import { resolveAuthFilePlanType, resolveAntigravityPlanType } from '@/utils/plans';
 
 export type AccountQuotaStatus =
   | 'unknown'
@@ -250,18 +250,7 @@ export const normalizeAccountProvider = (file: AuthFileItem): string => {
 };
 
 const readPlanType = (file: AuthFileItem): string | null => {
-  if (normalizeAccountProvider(file) === 'codex') {
-    const codexPlanType = resolveCodexPlanType(file);
-    if (codexPlanType) return codexPlanType;
-  }
-  const idToken = file.id_token;
-  const idTokenPlan =
-    idToken && typeof idToken === 'object' && !Array.isArray(idToken)
-      ? readString((idToken as Record<string, unknown>).plan_type)
-      : '';
-  const raw =
-    idTokenPlan || readString(file.planType ?? file.plan_type ?? file.tier ?? file.subscription);
-  return raw ? raw.toLowerCase() : null;
+  return resolveAuthFilePlanType(file);
 };
 
 const getQuotaStatusFromRemaining = (remainingPercent: number | null): AccountQuotaStatus => {
@@ -960,11 +949,8 @@ export const resolveAccountQuota = (
   if (provider === 'antigravity') {
     const quota = getCredentialScopedQuotaState(stores.antigravityQuota, file);
     if (!quota) return emptyQuota(filePlanType);
-    const subscriptionPlan =
-      readString(quota.subscription?.plan) ||
-      readString(quota.subscription?.tierName) ||
-      readString(quota.subscription?.tierId);
-    const planType = filePlanType ?? (subscriptionPlan ? subscriptionPlan.toLowerCase() : null);
+    const antigravityPlanType = resolveAntigravityPlanType(quota.subscription, filePlanType);
+    const planType = antigravityPlanType;
     if (quota.status === 'loading') return loadingQuota(planType);
     if (quota.status === 'error') {
       return quotaFromError(quota.error, planType, quota.errorStatus, quota.failedAtMs);

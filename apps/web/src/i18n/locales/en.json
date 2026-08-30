@@ -1630,7 +1630,6 @@
     "load_failed": "Failed to load quota: {{message}}",
     "missing_auth_index": "Auth file missing auth_index",
     "empty_models": "No quota data available",
-    "plan_label": "Plan",
     "group_gemini_models": "Gemini models",
     "group_claude_gpt_models": "Claude models",
     "group_models_description": "Models in this group: {{models}}",
@@ -1657,13 +1656,7 @@
     "error_badge": "Plan unavailable",
     "load_failed": "Subscription failed: {{message}}",
     "missing_auth_index": "Auth file missing auth_index",
-    "empty_data": "No subscription data",
-    "plan_badge": "{{plan}}",
-    "plan_free": "Free",
-    "plan_pro": "Pro",
-    "plan_ultra": "Ultra",
-    "plan_ultra_lite": "Ultra Lite",
-    "plan_unknown": "Unknown"
+    "empty_data": "No subscription data"
   },
   "claude_quota": {
     "title": "Claude Quota",
@@ -1685,15 +1678,7 @@
     "iguana_necktie": "Iguana Necktie",
     "weekly_scoped_model": "Weekly {{model}}",
     "limit_index": "Limit #{{index}}",
-    "extra_usage_label": "Extra Usage",
-    "plan_label": "Plan",
-    "plan_unknown": "Unknown",
-    "plan_free": "Free",
-    "plan_pro": "Pro",
-    "plan_max": "Max",
-    "plan_max5": "Max 5x",
-    "plan_max20": "Max 20x",
-    "plan_team": "Team"
+    "extra_usage_label": "Extra Usage"
   },
   "codex_quota": {
     "title": "Codex Quota",
@@ -1705,7 +1690,7 @@
     "missing_auth_index": "Auth file missing auth_index",
     "missing_account_id": "Codex credential missing ChatGPT account ID",
     "empty_windows": "No quota data available",
-    "no_access": "This credential has no Codex access (plan: free).",
+    "no_access": "This credential has no Codex access.",
     "refresh_button": "Refresh Quota",
     "retry_button": "Retry",
     "fetch_all": "Fetch All",
@@ -1767,13 +1752,7 @@
     "additional_monthly_window": "{{name}} monthly limit",
     "additional_generic_window": "{{name}} {{duration}} limit",
     "window_usage": "{{used}} / {{total}} hours used",
-    "window_usage_duration": "{{used}} / {{total}} used",
-    "plan_label": "Plan",
-    "plan_plus": "Plus",
-    "plan_team": "Team",
-    "plan_free": "Free",
-    "plan_pro": "Pro 20x",
-    "plan_prolite": "Pro 5x"
+    "window_usage_duration": "{{used}} / {{total}} used"
   },
   "kimi_quota": {
     "title": "Kimi Quota",
@@ -1835,9 +1814,6 @@
     "used_percent": "Used {{percent}}",
     "reset_at": "Resets {{time}}",
     "product_usage": "{{product}} usage",
-    "plan_label": "Plan",
-    "plan_supergrok": "SuperGrok",
-    "plan_supergrok_heavy": "SuperGrok Heavy",
     "official_api_plan": "Official API",
     "official_api_health": "Official xAI API identity is reachable. Billing and remaining quota are unavailable for this OAuth credential.",
     "pay_as_you_go_label": "Pay-as-you-go",
@@ -4603,5 +4579,60 @@
       "invalid_json": "Invalid JSON."
     },
     "paste_item": "Pasted item #{{index}}"
+  },
+  "plans": {
+    "label": "Plan",
+    "codex": {
+      "free": "Free",
+      "go": "Go",
+      "plus": "Plus",
+      "pro_5x": "Pro 5x",
+      "pro_20x": "Pro 20x",
+      "team": "Team",
+      "business": "Business",
+      "business_premium_5x": {
+        "short": "Business 5x",
+        "full": "Business Premium 5x"
+      },
+      "business_usage_based": {
+        "short": "Business PAYG",
+        "full": "Business Usage-based"
+      },
+      "enterprise": "Enterprise",
+      "enterprise_automation": {
+        "short": "Ent. Auto",
+        "full": "Enterprise Automation"
+      },
+      "enterprise_usage_based": {
+        "short": "Ent. PAYG",
+        "full": "Enterprise Usage-based"
+      },
+      "edu": {
+        "short": "Edu",
+        "full": "Education"
+      },
+      "edu_plus": {
+        "short": "Edu Plus",
+        "full": "Education Plus"
+      },
+      "edu_pro": {
+        "short": "Edu Pro",
+        "full": "Education Pro"
+      }
+    },
+    "claude": {
+      "free": "Free",
+      "pro": "Pro",
+      "max": "Max",
+      "max_5x": "Max 5x",
+      "max_20x": "Max 20x",
+      "team": "Team"
+    },
+    "antigravity": {
+      "free": "Free",
+      "pro": "Pro",
+      "ultra": "Ultra",
+      "ultra_lite": "Ultra Lite"
+    }
   }
 }

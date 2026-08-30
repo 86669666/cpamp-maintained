@@ -32,6 +32,12 @@ func TestAccountWindowQueryKeysRequireExplicitCodexAccountIDForLegacyFallback(t 
 	if !valid {
 		t.Fatal("explicit Codex legacy identity was rejected")
 	}
+	if accountKey != wantAccountKey || legacyAccountKey != accountKey {
+		t.Fatalf("unresolved explicit Codex keys = account:%q legacy:%q, want account:%q and no legacy fallback", accountKey, legacyAccountKey, wantAccountKey)
+	}
+	window.LegacyAccountKeyChecked = true
+	window.LegacyAccountKey = wantLegacyAccountKey
+	accountKey, legacyAccountKey = accountWindowQueryKeys(window)
 	if accountKey != wantAccountKey || legacyAccountKey != wantLegacyAccountKey || accountKey == legacyAccountKey {
 		t.Fatalf("explicit Codex keys = account:%q legacy:%q, want account:%q legacy:%q", accountKey, legacyAccountKey, wantAccountKey, wantLegacyAccountKey)
 	}
@@ -48,7 +54,15 @@ func TestAccountWindowQueryKeysRequireExplicitCodexAccountIDForLegacyFallback(t 
 	otherCredential.AuthFileSnapshot = "codex-b.json"
 	otherCredential.AuthIndex = "auth-b"
 	otherCredential.Source = "codex-b.json"
+	otherCredential.LegacyAccountKey = ""
+	otherCredential.LegacyAccountKeyChecked = false
 	otherCredentialKey, otherLegacyKey := accountWindowQueryKeys(otherCredential)
+	if accountKey == otherCredentialKey || legacyAccountKey == otherLegacyKey {
+		t.Fatalf("distinct credentials sharing display metadata were merged: account %q/%q legacy %q/%q", accountKey, otherCredentialKey, legacyAccountKey, otherLegacyKey)
+	}
+	otherCredential.LegacyAccountKeyChecked = true
+	otherCredential.LegacyAccountKey, _ = usageidentity.LegacyAccountKey(accountWindowFields(otherCredential))
+	otherCredentialKey, otherLegacyKey = accountWindowQueryKeys(otherCredential)
 	if accountKey == otherCredentialKey || legacyAccountKey == otherLegacyKey {
 		t.Fatalf("distinct credentials sharing display metadata were merged: account %q/%q legacy %q/%q", accountKey, otherCredentialKey, legacyAccountKey, otherLegacyKey)
 	}

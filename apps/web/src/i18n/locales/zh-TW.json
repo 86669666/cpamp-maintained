@@ -1628,7 +1628,6 @@
     "load_failed": "配額取得失敗：{{message}}",
     "missing_auth_index": "驗證檔案缺少 auth_index",
     "empty_models": "暫無配額資料",
-    "plan_label": "方案",
     "group_gemini_models": "Gemini 模型",
     "group_claude_gpt_models": "Claude 模型",
     "group_models_description": "此群組包含：{{models}}",
@@ -1655,13 +1654,7 @@
     "error_badge": "方案不可用",
     "load_failed": "訂閱取得失敗：{{message}}",
     "missing_auth_index": "驗證檔案缺少 auth_index",
-    "empty_data": "暫無訂閱資料",
-    "plan_badge": "{{plan}}",
-    "plan_free": "免費版",
-    "plan_pro": "Pro",
-    "plan_ultra": "Ultra",
-    "plan_ultra_lite": "Ultra Lite",
-    "plan_unknown": "未知"
+    "empty_data": "暫無訂閱資料"
   },
   "claude_quota": {
     "title": "Claude 配額",
@@ -1683,15 +1676,7 @@
     "iguana_necktie": "Iguana Necktie",
     "weekly_scoped_model": "{{model}} 週限額",
     "limit_index": "限額 #{{index}}",
-    "extra_usage_label": "額外用量",
-    "plan_label": "方案",
-    "plan_unknown": "未知",
-    "plan_free": "免費版",
-    "plan_pro": "專業版",
-    "plan_max": "Max",
-    "plan_max5": "Max 5x",
-    "plan_max20": "Max 20x",
-    "plan_team": "團隊版"
+    "extra_usage_label": "額外用量"
   },
   "codex_quota": {
     "title": "Codex 額度",
@@ -1703,7 +1688,7 @@
     "missing_auth_index": "驗證檔案缺少 auth_index",
     "missing_account_id": "Codex 憑證缺少 ChatGPT 帳號 ID",
     "empty_windows": "暫無配額資料",
-    "no_access": "該憑證已無 Codex 存取權限（free）。",
+    "no_access": "該憑證已無 Codex 存取權限。",
     "refresh_button": "重新整理配額",
     "retry_button": "重試",
     "fetch_all": "取得全部",
@@ -1765,13 +1750,7 @@
     "additional_generic_window": "{{name}} {{duration}} 限額",
     "window_usage": "已用 {{used}} / {{total}} 小時",
     "window_usage_duration": "已用 {{used}} / {{total}}",
-    "observed_window": "最近用量 Header",
-    "plan_label": "方案",
-    "plan_plus": "Plus",
-    "plan_team": "Team",
-    "plan_free": "Free",
-    "plan_pro": "Pro 20x",
-    "plan_prolite": "Pro 5x"
+    "observed_window": "最近用量 Header"
   },
   "kimi_quota": {
     "title": "Kimi 配額",
@@ -1833,9 +1812,6 @@
     "used_percent": "已用 {{percent}}",
     "reset_at": "重置 {{time}}",
     "product_usage": "{{product}} 使用",
-    "plan_label": "方案",
-    "plan_supergrok": "SuperGrok",
-    "plan_supergrok_heavy": "SuperGrok Heavy",
     "official_api_plan": "官方 API",
     "official_api_health": "xAI 官方 API 身分可存取；此 OAuth 憑證無法透過該介面取得帳單和剩餘額度。",
     "pay_as_you_go_label": "按量付費",
@@ -4601,5 +4577,60 @@
       "invalid_json": "JSON 格式無效。"
     },
     "paste_item": "貼上內容 #{{index}}"
+  },
+  "plans": {
+    "label": "方案",
+    "codex": {
+      "free": "Free",
+      "go": "Go",
+      "plus": "Plus",
+      "pro_5x": "Pro 5x",
+      "pro_20x": "Pro 20x",
+      "team": "Team",
+      "business": "Business",
+      "business_premium_5x": {
+        "short": "Business 5x",
+        "full": "Business Premium 5x"
+      },
+      "business_usage_based": {
+        "short": "Business PAYG",
+        "full": "Business Usage-based"
+      },
+      "enterprise": "Enterprise",
+      "enterprise_automation": {
+        "short": "Ent. Auto",
+        "full": "Enterprise Automation"
+      },
+      "enterprise_usage_based": {
+        "short": "Ent. PAYG",
+        "full": "Enterprise Usage-based"
+      },
+      "edu": {
+        "short": "Edu",
+        "full": "Education"
+      },
+      "edu_plus": {
+        "short": "Edu Plus",
+        "full": "Education Plus"
+      },
+      "edu_pro": {
+        "short": "Edu Pro",
+        "full": "Education Pro"
+      }
+    },
+    "claude": {
+      "free": "免費版",
+      "pro": "專業版",
+      "max": "Max",
+      "max_5x": "Max 5x",
+      "max_20x": "Max 20x",
+      "team": "團隊版"
+    },
+    "antigravity": {
+      "free": "免費版",
+      "pro": "Pro",
+      "ultra": "Ultra",
+      "ultra_lite": "Ultra Lite"
+    }
   }
 }

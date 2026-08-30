@@ -1220,3 +1220,162 @@ func compatEvent(hash string, offset int64) usage.Event {
 func osWriteFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
 }
+
+// TestServerCompatCPAConnectionValidation exercises the strict server-side CPA
+// connection validation endpoint (POST /v0/management/cpa-connection/validate).
+// Unlike GET /usage-service/config, which tolerantly returns 200 even when CPA
+// is unreachable, this endpoint must propagate CPA auth/network/5xx failures
+// as non-2xx so the installer fails closed. See P0-1 in PR #585.
+func TestServerCompatCPAConnectionValidation(t *testing.T) {
+	cpa := testutil.NewCPAMock(t)
+	cpa.ManagementKey = "management-key"
+
+	t.Run("succeeds when CPA is reachable and key matches", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusOK)
+		body := rr.Body.String()
+		if !strings.Contains(body, `"configured":true`) || !strings.Contains(body, cpa.URL()) {
+			t.Fatalf("validation body = %s", body)
+		}
+	})
+
+	t.Run("fails non-2xx when CPA Management Key is wrong", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "wrong-management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		if rr.Code == http.StatusOK {
+			t.Fatalf("validation with wrong key returned 200: %s", rr.Body.String())
+		}
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("wrong-key validation status = %d, want %d (body: %s)", rr.Code, http.StatusBadGateway, rr.Body.String())
+		}
+	})
+
+	t.Run("fails non-2xx when CPA is unreachable", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		// Point at a port that is not listening. The mock is closed immediately
+		// so its URL is guaranteed to be unreachable.
+		unreachable := testutil.NewCPAMock(t)
+		unreachableURL := unreachable.URL()
+		unreachable.Close()
+
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: unreachableURL,
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		if rr.Code == http.StatusOK {
+			t.Fatalf("validation against unreachable CPA returned 200: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("usage-service/config stays tolerant while validate is strict", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "wrong-management-key",
+		})
+
+		// The tolerant config read returns 200 even though CPA auth will fail.
+		configRR := testutil.Request(t, handler, http.MethodGet, "/usage-service/config", "", testutil.AdminKey)
+		testutil.RequireStatus(t, configRR, http.StatusOK)
+
+		// The strict validation endpoint must not return 200.
+		validateRR := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		if validateRR.Code == http.StatusOK {
+			t.Fatalf("strict validation returned 200 while config was tolerant: %s", validateRR.Body.String())
+		}
+	})
+
+	t.Run("valid environment connection cannot mask a wrong persisted connection", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		cfg.CPAUpstreamURL = cpa.URL()
+		cfg.ManagementKey = cpa.ManagementKey
+		handler, db := newCompatHandler(t, cfg, nil)
+		if err := db.SaveManagerConfig(context.Background(), store.ManagerConfig{
+			CPAConnection: store.ManagerCPAConnectionConfig{
+				CPABaseURL:    cpa.URL(),
+				ManagementKey: "wrong-management-key",
+			},
+		}); err != nil {
+			t.Fatalf("save wrong persisted connection: %v", err)
+		}
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		if rr.Code == http.StatusOK {
+			t.Fatalf("strict validation used the valid environment connection: %s", rr.Body.String())
+		}
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("persisted wrong-key validation status = %d, want %d (body: %s)", rr.Code, http.StatusBadGateway, rr.Body.String())
+		}
+	})
+
+	t.Run("rejects unauthenticated requests", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", "")
+		testutil.RequireStatus(t, rr, http.StatusUnauthorized)
+	})
+
+	t.Run("is POST-only", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodGet, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusMethodNotAllowed)
+	})
+
+	t.Run("fails when CPA connection is not configured", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, nil)
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusConflict)
+	})
+
+	t.Run("does not leak management key in response", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", "", testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusOK)
+		if strings.Contains(rr.Body.String(), "management-key") {
+			t.Fatalf("validation response leaked management key: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("ignores client-supplied CPA Management Key in body", func(t *testing.T) {
+		cfg := testutil.NewConfig(t)
+		handler, _ := newCompatHandler(t, cfg, &store.Setup{
+			CPAUpstreamURL: cpa.URL(),
+			ManagementKey:  "management-key",
+		})
+
+		// Submitting a wrong key in the request body must not influence the
+		// validation, which must use the persisted connection only.
+		body := `{"managementKey":"attacker-supplied-key"}`
+		rr := testutil.Request(t, handler, http.MethodPost, "/v0/management/cpa-connection/validate", body, testutil.AdminKey)
+		testutil.RequireStatus(t, rr, http.StatusOK)
+	})
+}

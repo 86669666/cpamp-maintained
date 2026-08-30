@@ -175,6 +175,53 @@ const makeMonitoringValue = (
 });
 
 describe('accountDetailViewModel', () => {
+  it('uses the full unified plan label for credential details', () => {
+    const viewModel = buildAccountDetailViewModel(
+      makeRow({
+        provider: 'codex',
+        planType: 'self_serve_business_prolite',
+      })
+    );
+
+    expect(viewModel.identity.planPresentation).toMatchObject({
+      rawPlanType: 'self_serve_business_prolite',
+      canonicalPlanType: 'business_premium_5x',
+      shortLabel: 'Business 5x',
+      fullLabel: 'Business Premium 5x',
+      known: true,
+    });
+    expect(viewModel.overview.credential.fields).toContainEqual(
+      expect.objectContaining({
+        key: 'planType',
+        value: 'Business Premium 5x',
+      })
+    );
+  });
+
+  it('preserves unknown plan casing in credential details', () => {
+    const viewModel = buildAccountDetailViewModel(
+      makeRow({
+        provider: 'antigravity',
+        planType: 'Antigravity Future',
+        quota: { planType: 'Antigravity Future' },
+      })
+    );
+
+    expect(viewModel.identity.planPresentation).toMatchObject({
+      rawPlanType: 'Antigravity Future',
+      canonicalPlanType: 'unknown:antigravity:antigravity future',
+      shortLabel: 'Antigravity Future',
+      fullLabel: 'Antigravity Future',
+      known: false,
+    });
+    expect(viewModel.overview.credential.fields).toContainEqual(
+      expect.objectContaining({
+        key: 'planType',
+        value: 'Antigravity Future',
+      })
+    );
+  });
+
   it('keeps credential identity fields focused and hides missing values', () => {
     const populated = buildAccountDetailViewModel(
       makeRow({

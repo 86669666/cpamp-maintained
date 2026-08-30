@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { TFunction } from 'i18next';
 import type { AuthFileItem, CodexQuotaState, CredentialScopedQuotaState } from '@/types';
 import type { UsageHeaderSnapshot } from '@/services/api/usageService';
 import {
@@ -15,9 +16,12 @@ import {
   filterAccountRows,
   getAccountInspectionResultSnapshotKey,
   getHandledAccountInspectionResultKeys,
+  getPlanOptionLabel,
+  getPlanOptionValue,
   getPlanOptions,
   sortAccountRows,
   type AccountInspectionResult,
+  type AccountRow,
   type AccountQuotaStores,
 } from './accountRows';
 import {
@@ -2486,13 +2490,13 @@ describe('accountRows', () => {
     plusRow.planType = ' plus ';
 
     expect(getPlanOptions(rows)).toEqual([
-      'enterprise',
-      'free',
-      'plus',
-      'team',
-      'prolite',
-      'pro',
-      'unknown',
+      { value: 'codex:enterprise', label: 'Enterprise' },
+      { value: 'codex:free', label: 'Free' },
+      { value: 'codex:plus', label: 'Plus' },
+      { value: 'codex:pro_5x', label: 'Pro 5x' },
+      { value: 'codex:pro_20x', label: 'Pro 20x' },
+      { value: 'codex:team', label: 'Team' },
+      { value: 'codex:unknown', label: 'Unknown plan' },
     ]);
     expect(
       sortAccountRows(rows, { key: 'plan', direction: 'asc' }).map((row) => row.fileName)
@@ -2525,6 +2529,45 @@ describe('accountRows', () => {
         search: '',
       }).map((row) => row.fileName)
     ).toEqual(['plus.json']);
+  });
+
+  it('reads non-Codex planType values from nested token metadata', () => {
+    const [row] = buildAccountRows(
+      [
+        {
+          name: 'claude.json',
+          type: 'claude',
+          id_token: { planType: 'plan_pro' },
+        },
+      ],
+      emptyStores()
+    );
+
+    expect(row.planType).toBe('plan_pro');
+    expect(row.canonicalPlanType).toBe('pro');
+  });
+
+  it('aggregates Codex plan aliases by canonical identity for filtering', () => {
+    const rows = buildAccountRows(
+      [
+        { name: 'prolite.json', type: 'codex', planType: 'prolite' },
+        { name: 'pro-lite.json', type: 'codex', planType: 'pro-lite' },
+        { name: 'pro_lite.json', type: 'codex', planType: 'pro_lite' },
+      ],
+      emptyStores()
+    );
+
+    expect(getPlanOptions(rows)).toEqual([{ value: 'codex:pro_5x', label: 'Pro 5x' }]);
+    expect(getPlanOptionLabel(rows, 'pro-lite')).toBe('Pro 5x');
+    expect(
+      filterAccountRows(rows, {
+        provider: 'all',
+        status: 'all',
+        plan: 'pro_5x',
+        quotaBand: 'all',
+        search: '',
+      }).map((row) => row.fileName)
+    ).toEqual(['prolite.json', 'pro-lite.json', 'pro_lite.json']);
   });
 
   it('sorts rows by priority, recent requests, and reset label', () => {
@@ -2725,5 +2768,197 @@ describe('accountRows', () => {
       source: 'cache',
       observedAtMs: 1_700_000_000_000,
     });
+  });
+
+  it('keeps cross-provider canonical plan filtering mutually exclusive', () => {
+    const rows = buildAccountRows(
+      [
+        { name: 'codex-pro.json', type: 'codex', planType: 'pro' },
+        { name: 'codex-prolite.json', type: 'codex', planType: 'prolite' },
+        { name: 'claude-pro.json', type: 'claude', id_token: { planType: 'plan_pro' } },
+        { name: 'antigravity-pro.json', type: 'antigravity', planType: 'pro' },
+      ],
+      emptyStores()
+    );
+
+    const planValues = getPlanOptions(rows).map((option) => option.value);
+    expect(planValues).toContain('claude:pro');
+    expect(planValues).toContain('antigravity:pro');
+    expect(planValues).toContain('codex:pro_20x');
+    expect(planValues).toContain('codex:pro_5x');
+    expect(getPlanOptions(rows)).toEqual(
+      expect.arrayContaining([
+        { value: 'antigravity:pro', label: 'Pro' },
+        { value: 'claude:pro', label: 'Pro' },
+        { value: 'codex:pro_20x', label: 'Pro 20x' },
+        { value: 'codex:pro_5x', label: 'Pro 5x' },
+      ])
+    );
+
+    const baseFilters = {
+      provider: 'all',
+      status: 'all' as const,
+      quotaBand: 'all' as const,
+      search: '',
+    };
+    expect(
+      filterAccountRows(rows, { ...baseFilters, plan: 'claude:pro' }).map((row) => row.fileName)
+    ).toEqual(['claude-pro.json']);
+    expect(
+      filterAccountRows(rows, { ...baseFilters, plan: 'antigravity:pro' }).map((row) => row.fileName)
+    ).toEqual(['antigravity-pro.json']);
+    expect(
+      filterAccountRows(rows, { ...baseFilters, plan: 'pro' }).map((row) => row.fileName)
+    ).toEqual(['claude-pro.json', 'antigravity-pro.json']);
+    expect(
+      filterAccountRows(rows, { ...baseFilters, plan: 'codex:pro_20x' }).map((row) => row.fileName)
+    ).toEqual(['codex-pro.json']);
+    expect(
+      filterAccountRows(rows, { ...baseFilters, plan: 'codex:pro_5x' }).map((row) => row.fileName)
+    ).toEqual(['codex-prolite.json']);
+  });
+
+  it('uses a canonical filter label independent of provider row order', () => {
+    const rows = buildAccountRows(
+      [
+        { name: 'claude-pro.json', type: 'claude', id_token: { planType: 'plan_pro' } },
+        { name: 'antigravity-pro.json', type: 'antigravity', planType: 'pro' },
+      ],
+      emptyStores()
+    );
+    const zhT = ((key: string, options?: { defaultValue?: string }) => {
+      if (key === 'plans.claude.pro') return '专业版';
+      if (key === 'plans.antigravity.pro') return 'Pro';
+      return options?.defaultValue ?? key;
+    }) as TFunction;
+
+    expect(getPlanOptions(rows, zhT)).toEqual([
+      { value: 'antigravity:pro', label: 'Pro' },
+      { value: 'claude:pro', label: '专业版' },
+    ]);
+    expect(getPlanOptions([...rows].reverse(), zhT)).toEqual([
+      { value: 'antigravity:pro', label: 'Pro' },
+      { value: 'claude:pro', label: '专业版' },
+    ]);
+  });
+
+  it('keeps a selected canonical pro filter stable when rows change', () => {
+    const initialRows = buildAccountRows(
+      [
+        { name: 'claude-pro.json', type: 'claude', id_token: { planType: 'plan_pro' } },
+        { name: 'codex-pro.json', type: 'codex', planType: 'pro' },
+      ],
+      emptyStores()
+    );
+    const updatedRows = initialRows.filter((row) => row.provider === 'codex');
+
+    expect(getPlanOptionValue(initialRows, 'pro')).toBe('pro');
+    expect(getPlanOptionValue(updatedRows, 'pro')).toBe('pro');
+    expect(getPlanOptionLabel(updatedRows, 'pro')).toBe('Pro');
+    expect(
+      filterAccountRows(updatedRows, {
+        provider: 'all',
+        status: 'all',
+        plan: 'pro',
+        quotaBand: 'all',
+        search: '',
+      })
+    ).toEqual([]);
+    expect(
+      filterAccountRows(updatedRows, {
+        provider: 'all',
+        status: 'all',
+        plan: 'pro_20x',
+        quotaBand: 'all',
+        search: '',
+      }).map((row) => row.fileName)
+    ).toEqual(['codex-pro.json']);
+  });
+
+  it('keeps a stale known plan label without remapping it to another provider', () => {
+    const initialRows = buildAccountRows(
+      [
+        { name: 'claude-pro.json', type: 'claude', id_token: { planType: 'plan_pro' } },
+        { name: 'codex-pro.json', type: 'codex', planType: 'pro' },
+      ],
+      emptyStores()
+    );
+    const updatedRows = initialRows.filter((row) => row.provider === 'codex');
+
+    expect(getPlanOptionValue(initialRows, 'pro')).toBe('pro');
+    expect(getPlanOptionValue(updatedRows, 'pro')).toBe('pro');
+    expect(getPlanOptionLabel(updatedRows, 'pro')).toBe('Pro');
+    expect(getPlanOptionLabel(updatedRows, 'pro')).not.toBe('Pro 20x');
+  });
+
+  it('normalizes legacy raw plan filter aliases without using current rows', () => {
+    const rows: AccountRow[] = [];
+    expect(getPlanOptionValue(rows, 'prolite')).toBe('pro_5x');
+    expect(getPlanOptionValue(rows, 'pro-lite')).toBe('pro_5x');
+    expect(getPlanOptionValue(rows, 'pro_lite')).toBe('pro_5x');
+    expect(getPlanOptionValue(rows, 'self_serve_business_prolite')).toBe(
+      'business_premium_5x'
+    );
+    expect(getPlanOptionValue(rows, 'enterprise_cbp_automation')).toBe('enterprise_automation');
+  });
+
+  it('scopes same-named unknown plans to their providers', () => {
+    const rows = buildAccountRows(
+      [
+        { name: 'antigravity-future.json', type: 'antigravity', planType: 'future_plan_x' },
+        { name: 'kimi-future.json', type: 'kimi', planType: 'future_plan_x' },
+      ],
+      emptyStores()
+    );
+
+    expect(getPlanOptions(rows)).toEqual([
+      { value: 'unknown:antigravity:future_plan_x', label: 'future_plan_x' },
+      { value: 'unknown:kimi:future_plan_x', label: 'future_plan_x' },
+    ]);
+  });
+
+  it('uses the current raw label for a scoped unknown plan', () => {
+    const rows = buildAccountRows(
+      [{ name: 'antigravity-future.json', type: 'antigravity', planType: 'Antigravity Future' }],
+      emptyStores()
+    );
+
+    expect(getPlanOptionLabel(rows, 'unknown:antigravity:antigravity future')).toBe(
+      'Antigravity Future'
+    );
+  });
+
+  it('falls back to a readable scoped unknown plan label after its row disappears', () => {
+    expect(
+      getPlanOptionLabel([], 'unknown:antigravity:antigravity future')
+    ).toBe('antigravity future');
+    expect(getPlanOptionLabel([], 'unknown:provider:future:premium')).toBe('future:premium');
+    expect(getPlanOptionLabel([], 'unknown:provider:future:premium')).not.toContain(
+      'unknown:provider:'
+    );
+  });
+
+  it('keeps the unknown plan filter label stable regardless of row order', () => {
+    const zhT = ((key: string, options?: { defaultValue?: string }) =>
+      key === 'auth_files.codex_plan_filter_unknown' ? '未知套餐' : (options?.defaultValue ?? key)) as TFunction;
+
+    const baseFile = { type: 'codex' } as AuthFileItem;
+    const nullPlanRow = buildAccountRows(
+      [{ ...baseFile, name: 'missing-plan.json' }],
+      emptyStores()
+    )[0]!;
+    const explicitUnknownRow = buildAccountRows(
+      [{ ...baseFile, name: 'explicit-unknown.json', planType: 'unknown' }],
+      emptyStores()
+    )[0]!;
+
+    for (const ordered of [
+      [nullPlanRow, explicitUnknownRow],
+      [explicitUnknownRow, nullPlanRow],
+    ]) {
+      const options = getPlanOptions(ordered, zhT);
+      expect(options).toHaveLength(1);
+      expect(options[0]).toEqual({ value: 'codex:unknown', label: '未知套餐' });
+    }
   });
 });

@@ -149,10 +149,19 @@ func TestManagerDatabaseProcessLockPrecedesStoreOpen(t *testing.T) {
 	}
 	source := string(content)
 	lockAt := strings.Index(source, "processlock.Acquire(cfg.DBPath)")
+	recoveryAt := strings.Index(source, "managerdatasnapshot.Recover(cfg.DBPath, cfg.DataKeyPath)")
+	dataKeyGuardAt := strings.Index(source, "sqliterepo.RequireExistingDataKeyForEncryptedCPAConnection")
 	storeOpenAt := strings.Index(source, "store.Open(cfg.DBPath, protector)")
 	lockCloseAt := strings.Index(source, "databaseLock.Close()")
-	if lockAt < 0 || storeOpenAt < lockAt || lockCloseAt < lockAt {
-		t.Fatalf("database lock ordering invalid: lock=%d open=%d close=%d", lockAt, storeOpenAt, lockCloseAt)
+	if lockAt < 0 || recoveryAt < lockAt || dataKeyGuardAt < recoveryAt || storeOpenAt < dataKeyGuardAt || lockCloseAt < lockAt {
+		t.Fatalf(
+			"database startup ordering invalid: lock=%d recovery=%d dataKeyGuard=%d open=%d close=%d",
+			lockAt,
+			recoveryAt,
+			dataKeyGuardAt,
+			storeOpenAt,
+			lockCloseAt,
+		)
 	}
 }
 
@@ -171,6 +180,30 @@ func TestCleanupDerivedCommandUsesSignalContext(t *testing.T) {
 	runAt := strings.Index(commandSource, "derivedmaintenance.Run(ctx, os.Args[2:], os.Stdout, os.Stderr)")
 	if contextAt < 0 || runAt < contextAt {
 		t.Fatalf("cleanup-derived signal context ordering invalid: context=%d run=%d", contextAt, runAt)
+	}
+}
+
+func TestManagerDataSnapshotCommandUsesSignalContext(t *testing.T) {
+	content, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	source := string(content)
+	commandAt := strings.Index(source, `case "manager-data-snapshot":`)
+	if commandAt < 0 {
+		t.Fatal("manager-data-snapshot command entry not found")
+	}
+	commandSource := source[commandAt:]
+	runAt := strings.Index(commandSource, "runManagerDataSnapshotCommand(os.Args[2:], os.Stdout, os.Stderr)")
+	contextAt := strings.Index(source, "func runManagerDataSnapshotCommand")
+	if runAt < 0 || contextAt < 0 {
+		t.Fatalf("manager-data-snapshot command/helper wiring invalid: run=%d helper=%d", runAt, contextAt)
+	}
+	helpersource := source[contextAt:]
+	notifyAt := strings.Index(helpersource, "signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)")
+	snapshotAt := strings.Index(helpersource, "managerdatasnapshot.Run(ctx, args, stdout, stderr)")
+	if notifyAt < 0 || snapshotAt < notifyAt {
+		t.Fatalf("manager-data-snapshot signal wiring invalid: run=%d helper=%d notify=%d snapshot=%d", runAt, contextAt, notifyAt, snapshotAt)
 	}
 }
 

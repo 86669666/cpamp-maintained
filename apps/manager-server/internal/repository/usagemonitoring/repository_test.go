@@ -551,12 +551,60 @@ func TestCodexAccountWindowKeepsHistoryAcrossSameAccountReauth(t *testing.T) {
 		}
 	}
 
-	assertStats("projection complete with daily rollup available", 2, 35)
+	assertStats("projection complete with daily rollup available", 1, 30)
 	rawTail := makeEvent("current-new-credential-tail", currentFromMS+3_000, "codex-a-pro.json", "auth-2", "account-a", 40)
 	if _, err := db.InsertEvents(ctx, []usage.Event{rawTail}); err != nil {
 		t.Fatalf("insert raw reauth tail: %v", err)
 	}
-	assertStats("projection plus raw tail", 3, 75)
+	assertStats("projection plus raw tail", 2, 70)
+}
+
+func TestCodexAccountWindowRejectsConflictingLegacyFileIndex(t *testing.T) {
+	_, db := newMonitoringRepositoryStore(t)
+	ctx := context.Background()
+	fromMS := int64(1_800_057_600_000)
+	toMS := fromMS + testDayMS
+	makeEvent := func(hash string, offset, input int64, accountID string) usage.Event {
+		event := monitoringRepositoryEvent(hash, fromMS+offset, "gpt-window", "key-a", "same@example.com", "auth-a", "codex-a.json", false, input, 1, 10)
+		event.AuthFileSnapshot = "codex-a.json"
+		event.AuthProviderSnapshot = "codex"
+		event.AuthAccountIDSnapshot = accountID
+		return event
+	}
+	if _, err := db.InsertEvents(ctx, []usage.Event{
+		makeEvent("window-conflict-stable", 1_000, 10, "account-a"),
+		makeEvent("window-conflict-legacy", 2_000, 20, ""),
+		makeEvent("window-conflict-other", 3_000, 90, "account-b"),
+	}); err != nil {
+		t.Fatalf("insert conflicting account-window events: %v", err)
+	}
+	catchUpMonitoringRepository(t, ctx, db)
+
+	windows := []store.AccountWindowUsageQuery{{
+		RequestIndex:          0,
+		FromMS:                fromMS,
+		ToMS:                  toMS,
+		AccountSnapshot:       "same@example.com",
+		AuthFileSnapshot:      "codex-a.json",
+		AuthProviderSnapshot:  "codex",
+		AuthAccountIDSnapshot: "account-a",
+		AuthIndex:             "auth-a",
+		Source:                "codex-a.json",
+	}}
+	raw, err := db.AccountWindowModelStats(ctx, windows)
+	if err != nil {
+		t.Fatalf("raw conflicting account-window stats: %v", err)
+	}
+	projected, _, available, err := db.UsageMonitoringAccountWindowStats(ctx, windows)
+	if err != nil || !available {
+		t.Fatalf("projected conflicting account-window stats: available=%v err=%v", available, err)
+	}
+	if !reflect.DeepEqual(projected, raw) {
+		t.Fatalf("conflicting account-window projection/raw mismatch\nprojection=%#v\nraw=%#v", projected, raw)
+	}
+	if len(projected) != 1 || projected[0].Calls != 1 || projected[0].InputTokens != 10 {
+		t.Fatalf("conflicting legacy account-window bucket was merged = %#v, want only stable account event", projected)
+	}
 }
 
 func TestAccountWindowProjectionUsesDailyStatsWithEdgesAndRawTail(t *testing.T) {

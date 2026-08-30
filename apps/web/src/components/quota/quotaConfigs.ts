@@ -103,10 +103,28 @@ export const buildQuotaFailureState = <TState, TData>(
   file: AuthFileItem | undefined,
   activeState: TState | undefined,
   failedAtMs = Date.now()
-): TState =>
-  config.buildFailureState
-    ? config.buildFailureState(message, status, file, activeState, failedAtMs)
-    : config.buildErrorState(message, status, file);
+): TState => {
+  if (config.buildFailureState) {
+    return config.buildFailureState(message, status, file, activeState, failedAtMs);
+  }
+
+  const errorState = config.buildErrorState(message, status, file);
+  if (!activeState || typeof activeState !== 'object') {
+    return { ...errorState, failedAtMs } as TState;
+  }
+
+  // Provider states own the payload shape. Preserve it on a transient refresh
+  // failure while replacing only the lifecycle/error metadata from the failed
+  // request. This keeps non-Codex windows/groups/rows/billing visible too.
+  return {
+    ...errorState,
+    ...activeState,
+    status: 'error',
+    error: message,
+    errorStatus: status,
+    failedAtMs,
+  } as TState;
+};
 
 type DisplayQuotaState = {
   status?: 'idle' | 'loading' | 'success' | 'error';
@@ -229,10 +247,7 @@ const mergeCodexQuotaWindows = (
       ...(aliases.length > 0 ? { providerWindowAliases: aliases } : {}),
     };
   });
-  return [
-    ...mergedWindows,
-    ...observedWindows.filter((_, index) => !usedObserved.has(index)),
-  ];
+  return [...mergedWindows, ...observedWindows.filter((_, index) => !usedObserved.has(index))];
 };
 
 const hasKnownResetCreditCount = (quota: CodexQuotaMergeState): boolean => {
@@ -325,7 +340,9 @@ const appendMissingObservedQuotaWindows = <TState extends DisplayQuotaState>(
         ) === observedIndex
     );
   };
-  const missingWindows = observedWindows.filter((_, observedIndex) => !isAlreadyRepresented(observedIndex));
+  const missingWindows = observedWindows.filter(
+    (_, observedIndex) => !isAlreadyRepresented(observedIndex)
+  );
   if (missingWindows.length === 0) return activeQuota;
   const merged: CodexQuotaMergeState = {
     ...active,

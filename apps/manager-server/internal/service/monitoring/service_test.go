@@ -2278,6 +2278,102 @@ func TestAccountHistorySeparatesSharedAccountAndStructuredIdentityOverridesLegac
 	}
 }
 
+func TestAccountHistoryAutoMergesSafeCodexLegacyFileIndex(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	baseMS := int64(1_700_006_000_000)
+	stable := monitoringEvent("history-codex-stable", baseMS+1_000, "gpt-codex", "auth-a", "codex-a.json", false, 10, 2, 0, 0, 12, nil)
+	stable.AuthFileSnapshot = "codex-a.json"
+	stable.AuthProviderSnapshot = "codex"
+	stable.AuthAccountIDSnapshot = "account-a"
+	stable.AccountSnapshot = "same@example.com"
+	legacy := monitoringEvent("history-codex-legacy", baseMS+2_000, "gpt-codex", "auth-a", "codex-a.json", false, 20, 3, 0, 0, 23, nil)
+	legacy.AuthFileSnapshot = "codex-a.json"
+	legacy.AuthProviderSnapshot = "codex"
+	legacy.AuthAccountIDSnapshot = ""
+	legacy.AccountSnapshot = "same@example.com"
+	if _, err := db.InsertEvents(ctx, []usage.Event{stable, legacy}); err != nil {
+		t.Fatalf("insert Codex history events: %v", err)
+	}
+
+	req := AccountHistoryRequest{Accounts: []AccountHistoryTarget{{
+		RowKey:                "codex-row",
+		AuthFileSnapshot:      "codex-a.json",
+		AuthIndex:             "auth-a",
+		AuthProviderSnapshot:  "codex",
+		AuthAccountIDSnapshot: "account-a",
+		AccountSnapshot:       "same@example.com",
+		Source:                "codex-a.json",
+	}}, CatchUp: true}
+	service := New(db)
+	first, err := service.AccountHistory(ctx, req)
+	if err != nil {
+		t.Fatalf("first account history: %v", err)
+	}
+	if len(first.Items) != 1 || !first.Items[0].Matched {
+		t.Fatalf("first account history = %#v", first.Items)
+	}
+	item := first.Items[0]
+	if item.TotalRequests != 2 || item.SuccessCalls != 2 || item.TotalTokens != 35 {
+		t.Fatalf("safe Codex legacy merge totals = %#v, want requests=2 success=2 tokens=35", item)
+	}
+	if item.FirstSeenMS == nil || *item.FirstSeenMS != baseMS+1_000 || item.LastSeenMS == nil || *item.LastSeenMS != baseMS+2_000 {
+		t.Fatalf("safe Codex legacy merge seen range = %#v/%#v", item.FirstSeenMS, item.LastSeenMS)
+	}
+
+	repeat := req
+	repeat.CatchUp = false
+	second, err := service.AccountHistory(ctx, repeat)
+	if err != nil {
+		t.Fatalf("repeat account history: %v", err)
+	}
+	if len(second.Items) != 1 || second.Items[0].TotalRequests != 2 || second.Items[0].TotalTokens != 35 {
+		t.Fatalf("repeat account history double-counted legacy bucket = %#v", second.Items)
+	}
+}
+
+func TestAccountHistoryRejectsConflictingCodexLegacyFileIndex(t *testing.T) {
+	db := newMonitoringTestStore(t)
+	ctx := context.Background()
+	baseMS := int64(1_700_007_000_000)
+	stable := monitoringEvent("history-codex-conflict-stable", baseMS+1_000, "gpt-codex", "auth-a", "codex-a.json", false, 10, 2, 0, 0, 12, nil)
+	stable.AuthFileSnapshot = "codex-a.json"
+	stable.AuthProviderSnapshot = "codex"
+	stable.AuthAccountIDSnapshot = "account-a"
+	legacy := monitoringEvent("history-codex-conflict-legacy", baseMS+2_000, "gpt-codex", "auth-a", "codex-a.json", false, 20, 3, 0, 0, 23, nil)
+	legacy.AuthFileSnapshot = "codex-a.json"
+	legacy.AuthProviderSnapshot = "codex"
+	conflicting := monitoringEvent("history-codex-conflict-other", baseMS+3_000, "gpt-codex", "auth-a", "codex-a.json", false, 90, 9, 0, 0, 99, nil)
+	conflicting.AuthFileSnapshot = "codex-a.json"
+	conflicting.AuthProviderSnapshot = "codex"
+	conflicting.AuthAccountIDSnapshot = "account-b"
+	if _, err := db.InsertEvents(ctx, []usage.Event{stable, legacy, conflicting}); err != nil {
+		t.Fatalf("insert conflicting Codex history events: %v", err)
+	}
+
+	resp, err := New(db).AccountHistory(ctx, AccountHistoryRequest{
+		Accounts: []AccountHistoryTarget{{
+			RowKey:                "codex-conflict-row",
+			AuthFileSnapshot:      "codex-a.json",
+			AuthIndex:             "auth-a",
+			AuthProviderSnapshot:  "codex",
+			AuthAccountIDSnapshot: "account-a",
+			AccountSnapshot:       "same@example.com",
+			Source:                "codex-a.json",
+		}},
+		CatchUp: true,
+	})
+	if err != nil {
+		t.Fatalf("conflicting account history: %v", err)
+	}
+	if len(resp.Items) != 1 || !resp.Items[0].Matched {
+		t.Fatalf("conflicting account history = %#v", resp.Items)
+	}
+	if resp.Items[0].TotalRequests != 1 || resp.Items[0].TotalTokens != 12 {
+		t.Fatalf("conflicting legacy bucket was merged = %#v, want only stable account event", resp.Items[0])
+	}
+}
+
 func TestAccountHistoryPricesContextTierBands(t *testing.T) {
 	db := newMonitoringTestStore(t)
 	ctx := context.Background()

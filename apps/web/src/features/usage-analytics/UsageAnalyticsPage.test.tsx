@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import {
   USAGE_ANALYTICS_DEFAULT_FILTERS,
+  type UsageDrilldownEvent,
   type UsageRankRow,
   type UsageTimelinePoint,
 } from './usageAnalyticsModel';
@@ -117,6 +118,35 @@ const createRankRow = (overrides: Partial<UsageRankRow> = {}): UsageRankRow => (
   estimatedCost: 1.25,
   averageLatencyMs: null,
   share: 1,
+  ...overrides,
+});
+
+const createDrilldownEvent = (
+  overrides: Partial<UsageDrilldownEvent> = {}
+): UsageDrilldownEvent => ({
+  requestId: 'request-1',
+  eventHash: 'event-1',
+  timestampMs: 1_780_000_000_000,
+  model: 'gpt-4o',
+  apiKeyHash: 'abcdef1234567890',
+  apiKeyLabel: 'sk-****7890',
+  source: 'codex',
+  authIndex: 'auth-1',
+  provider: 'codex',
+  endpoint: 'POST /v1/chat/completions',
+  totalTokens: 100,
+  estimatedCost: 0,
+  latencyMs: 250,
+  ttftMs: 80,
+  failed: false,
+  failStatusCode: null,
+  failSummary: '',
+  headerErrorKind: '',
+  headerErrorCode: '',
+  headerTraceId: '',
+  headerQuotaPlanType: 'pro',
+  headerQuotaUsedPercent: 25,
+  headerQuotaRecoverAtMs: null,
   ...overrides,
 });
 
@@ -519,6 +549,17 @@ describe('UsageAnalyticsPage', () => {
     expect(text).not.toContain('usage_analytics.favorite_views_title');
     expect(text).not.toContain('usage_analytics.recent_views_title');
     expect(text).not.toContain('usage_analytics.model_rank_title');
+  });
+
+  it('uses the unified full plan label in drilldown diagnostics', () => {
+    mocks.usageState = createUsageState({
+      drilldownPreview: [createDrilldownEvent()],
+    });
+    const renderer = renderPage();
+    const text = getText(renderer.root);
+
+    expect(text).toContain('Pro 20x');
+    expect(text).not.toContain('self_serve_business_prolite');
   });
 
   it('renders trends as a focused time-series workspace', () => {

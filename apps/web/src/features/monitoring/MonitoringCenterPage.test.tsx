@@ -490,11 +490,13 @@ describe('MonitoringCenterPage account card', () => {
     const row = {
       id: 'very-long-account-name@example.com',
       account: 'very-long-account-name@example.com',
+      provider: 'codex',
       displayAccount: 'very-long-account-name@example.com',
       accountMasked: 'ver***@example.com',
       authLabels: ['alpha'],
       authIndices: ['1'],
       channels: ['default'],
+      planTypes: ['self_serve_business_prolite', 'business_premium_5x'],
       totalCalls: 1,
       successCalls: 1,
       failureCalls: 0,
@@ -536,8 +538,12 @@ describe('MonitoringCenterPage account card', () => {
         />
       );
 
-    expect(renderCard('masked')).toContain('>ver***@example.com</span>');
-    expect(renderCard('masked')).toContain('very-long-account-name@example.com');
+    const maskedCard = renderCard('masked');
+    expect(maskedCard).toContain('>ver***@example.com</span>');
+    expect(maskedCard).toContain('very-long-account-name@example.com');
+    expect(maskedCard).toContain('Business 5x');
+    expect(maskedCard).toContain('title="Business Premium 5x"');
+    expect(maskedCard).not.toContain('self_serve_business_prolite');
     expect(renderCard('full')).toContain('>very-long-account-name@example.com</span>');
   });
 

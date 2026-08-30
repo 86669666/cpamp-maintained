@@ -32,6 +32,7 @@ import {
 } from '@/components/ui/icons';
 import { useNotificationStore, useThemeStore } from '@/stores';
 import { copyToClipboard } from '@/utils/clipboard';
+import { getPlanPresentation } from '@/utils/plans';
 import {
   buildUsageHeatmapChartData,
   buildModelKeyDistribution,
@@ -310,8 +311,13 @@ const formatDrilldownDiagnostics = (row: UsageDrilldownEvent, locale: string, t:
   if (row.headerTraceId) {
     parts.push(`${t('monitoring.header_trace')}: ${row.headerTraceId}`);
   }
+  const planLabel = getPlanPresentation({
+    provider: row.provider,
+    planType: row.headerQuotaPlanType,
+    t,
+  })?.fullLabel;
   const quotaParts = [
-    row.headerQuotaPlanType,
+    planLabel,
     typeof row.headerQuotaUsedPercent === 'number'
       ? formatPercent(row.headerQuotaUsedPercent / 100)
       : '',

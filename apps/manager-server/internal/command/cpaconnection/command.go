@@ -12,6 +12,7 @@ import (
 
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/config"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/processlock"
+	sqliterepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/sqlite"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/cpa"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/managerconfig"
@@ -96,7 +97,7 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 	}
 	defer st.Close()
 
-	if err := storeConnection(ctx, cfg, st, baseURL, managementKey); err != nil {
+	if err := storeConnection(ctx, cfg, st, baseURL, managementKey, opts.RepairConflict); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintln(stdout, "CPA connection stored in encrypted Manager Server configuration.")
@@ -108,6 +109,7 @@ type options struct {
 	ManagementKeyFile string
 	DBPath            string
 	DataKeyPath       string
+	RepairConflict    bool
 }
 
 func parseArgs(args []string, stderr io.Writer) (options, error) {
@@ -118,9 +120,11 @@ func parseArgs(args []string, stderr io.Writer) (options, error) {
 	fs.StringVar(&opts.ManagementKeyFile, "management-key-file", "", "file containing the CPA Management Key")
 	fs.StringVar(&opts.DBPath, "db-path", "", "SQLite database path; defaults to Manager Server config")
 	fs.StringVar(&opts.DataKeyPath, "data-key-path", "", "data.key path; defaults to Manager Server config")
+	fs.BoolVar(&opts.RepairConflict, "repair-conflict", false, "explicitly canonicalize persisted CPA connection state the resolver cannot trust (rows conflicting with each other, or authority-less partial rows conflicting with the request), using the requested connection")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintln(stderr, "Usage: cpa-manager-plus store-cpa-connection --cpa-base-url URL --management-key-file PATH [--db-path PATH] [--data-key-path PATH]")
+		_, _ = fmt.Fprintln(stderr, "Usage: cpa-manager-plus store-cpa-connection --cpa-base-url URL --management-key-file PATH [--db-path PATH] [--data-key-path PATH] [--repair-conflict]")
 		_, _ = fmt.Fprintln(stderr, "Stop Manager Server before running this offline command.")
+		_, _ = fmt.Fprintln(stderr, "--repair-conflict only repairs persisted state the resolver cannot trust; a complete stored connection still requires matching input.")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -208,27 +212,24 @@ func inspectExistingDatabase(ctx context.Context, dbPath string) (databaseInspec
 		return inspection, nil
 	}
 
-	rows, err = db.QueryContext(ctx, `select value from settings where key in ('setup', 'manager_config_v1')`)
+	storageInspection, err := sqliterepo.InspectPersistedCPAConnectionStorage(ctx, dbPath)
 	if err != nil {
-		return databaseInspection{}, fmt.Errorf("inspect encrypted CPA connection in %s: %w", dbPath, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return databaseInspection{}, err
-		}
-		if strings.Contains(raw, "enc:v1:") {
-			inspection.ProtectedConnection = true
-		}
-	}
-	if err := rows.Err(); err != nil {
 		return databaseInspection{}, err
 	}
+	inspection.ProtectedConnection = storageInspection.HasEncryptedConnection
 	return inspection, nil
 }
 
-func storeConnection(ctx context.Context, cfg config.Config, st *store.Store, baseURL string, managementKey string) error {
+// storeConnection imports the requested connection into the encrypted
+// manager_config_v1 row and its legacy setup mirror in one transaction.
+// Without --repair-conflict, persisted authority rules reject only state the
+// shared resolver cannot trust. A complete manager_config_v1 row is authoritative
+// over stale setup data; a complete setup can fill a compatible partial manager
+// row. With an explicit repair, only state the resolver judged conflicting (rows
+// contradicting each other, or partial rows without an authority that contradict
+// the request) may be canonicalized; a complete and consistent stored connection
+// still requires matching input.
+func storeConnection(ctx context.Context, cfg config.Config, st *store.Store, baseURL string, managementKey string, repairConflict bool) error {
 	input := connection{BaseURL: baseURL, ManagementKey: managementKey}
 	if err := validateConnection("environment", cfg.CPAUpstreamURL, cfg.ManagementKey, input); err != nil {
 		return err
@@ -238,41 +239,68 @@ func storeConnection(ctx context.Context, cfg config.Config, st *store.Store, ba
 	if err != nil {
 		return fmt.Errorf("load manager_config_v1: %w", err)
 	}
-	if managerOK {
-		if err := validateConnection(
-			"manager_config_v1",
-			managerCfg.CPAConnection.CPABaseURL,
-			managerCfg.CPAConnection.ManagementKey,
-			input,
-		); err != nil {
-			return err
-		}
-	} else {
-		managerCfg = managerconfig.New(cfg, st, nil).DefaultManagerConfig()
-	}
-
 	setup, setupOK, err := st.LoadSetup(ctx)
 	if err != nil {
 		return fmt.Errorf("load legacy setup: %w", err)
 	}
-	if setupOK {
-		if err := validateConnection("legacy setup", setup.CPAUpstreamURL, setup.ManagementKey, input); err != nil {
-			return err
+	if !managerOK {
+		managerCfg = managerconfig.New(cfg, st, nil).DefaultManagerConfig()
+	}
+	resolution, resolveErr := managerconfig.ResolveLegacyConnectionAuthority(
+		managerCfg,
+		managerOK,
+		setup,
+		setupOK,
+	)
+	validateErr := error(nil)
+	if resolveErr == nil {
+		validateErr = resolution.ValidateRequestedLegacyConnection(input)
+	}
+	// Repairable persisted state is exactly what the shared resolver cannot
+	// trust: rows that contradict each other, or authority-less partial rows
+	// that contradict the request. A complete, consistent authority (manager
+	// or setup) is never rebound through repair, with or without the flag.
+	repairableConflict := resolveErr != nil ||
+		(resolution.Authority == managerconfig.LegacyConnectionAuthorityNone && validateErr != nil)
+	if repairableConflict && !repairConflict {
+		if normalizeErr := st.NormalizeLegacyConnectionStorage(ctx, managerCfg, managerOK, setup, setupOK); normalizeErr != nil {
+			return fmt.Errorf("normalize legacy CPA connection storage: %w", normalizeErr)
 		}
-		if !managerOK {
-			managerCfg.Collector.Queue = managerconfig.ValueOr(setup.Queue, managerCfg.Collector.Queue)
-			managerCfg.Collector.PopSide = managerconfig.NormalizePopSide(setup.PopSide, managerCfg.Collector.PopSide)
+		conflictErr := validateErr
+		if resolveErr != nil {
+			conflictErr = resolveErr
 		}
+		return fmt.Errorf("%w%s", conflictErr, managerconfig.LegacyConnectionConflictRepairHint)
+	}
+	if !repairableConflict && validateErr != nil {
+		// The persisted authority is healthy and simply differs from the
+		// request; repair does not apply to this state.
+		if normalizeErr := st.NormalizeLegacyConnectionStorage(ctx, managerCfg, managerOK, setup, setupOK); normalizeErr != nil {
+			return fmt.Errorf("normalize legacy CPA connection storage: %w", normalizeErr)
+		}
+		return fmt.Errorf("%w%s", validateErr, managerconfig.LegacyConnectionCompleteAuthorityNote)
+	}
+	if repairableConflict {
+		// Canonicalizing conflicting history: normalize first so that even a
+		// failed canonical write leaves the historical rows encrypted at
+		// rest, exactly like the non-repair rejection path.
+		if normalizeErr := st.NormalizeLegacyConnectionStorage(ctx, managerCfg, managerOK, setup, setupOK); normalizeErr != nil {
+			return fmt.Errorf("normalize legacy CPA connection storage: %w", normalizeErr)
+		}
+	}
+	if !managerOK {
+		// A missing manager row starts from defaults, so a persisted legacy
+		// setup's collector choices are the only historical values available.
+		managerCfg.Collector.Queue = managerconfig.ValueOr(setup.Queue, managerCfg.Collector.Queue)
+		managerCfg.Collector.PopSide = managerconfig.NormalizePopSide(setup.PopSide, managerCfg.Collector.PopSide)
+	} else {
+		managerconfig.MergeLegacyCollectorSettings(&managerCfg, setup, setupOK)
 	}
 
 	managerCfg.CPAConnection.CPABaseURL = input.BaseURL
 	managerCfg.CPAConnection.ManagementKey = input.ManagementKey
 
 	nextSetup := managerconfig.SetupFromManagerConfig(managerCfg)
-	if setupOK {
-		nextSetup.Queue = managerconfig.ValueOr(setup.Queue, nextSetup.Queue)
-		nextSetup.PopSide = managerconfig.NormalizePopSide(setup.PopSide, nextSetup.PopSide)
-	}
 	if err := st.SaveManagerConfigAndSetup(ctx, managerCfg, nextSetup); err != nil {
 		return fmt.Errorf("save encrypted manager_config_v1 and legacy setup: %w", err)
 	}
@@ -290,11 +318,10 @@ func storeConnection(ctx context.Context, cfg config.Config, st *store.Store, ba
 	return nil
 }
 
-type connection struct {
-	BaseURL       string
-	ManagementKey string
-}
+type connection = managerconfig.LegacyConnection
 
+// validateConnection guards an unrepairable connection source (the resolved
+// environment): any partial state is refused outright.
 func validateConnection(source string, rawBaseURL string, rawManagementKey string, input connection) error {
 	existing := connection{
 		BaseURL:       cpa.NormalizeBaseURL(rawBaseURL),
@@ -313,6 +340,5 @@ func validateConnection(source string, rawBaseURL string, rawManagementKey strin
 }
 
 func connectionsEqual(left connection, right connection) bool {
-	return cpa.NormalizeBaseURL(left.BaseURL) == cpa.NormalizeBaseURL(right.BaseURL) &&
-		security.EqualHMAC(strings.TrimSpace(left.ManagementKey), strings.TrimSpace(right.ManagementKey))
+	return managerconfig.LegacyConnectionsEqual(left, right)
 }

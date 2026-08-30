@@ -683,6 +683,7 @@ export const buildAccountRowsFromAnalytics = (
         authIndices: uniqueReadableValues(row.auth_indices),
         sourceKeys,
         channels,
+        planTypes: uniqueReadableValues(authMetas.map((meta) => meta.planType)),
         totalCalls: row.calls,
         successCalls: row.success_calls,
         failureCalls: row.failure_calls,

@@ -229,6 +229,10 @@ func (s *Store) SaveManagerConfigAndSetup(ctx context.Context, cfg ManagerConfig
 	return s.Settings.SaveManagerConfigAndSetup(ctx, cfg, setup)
 }
 
+func (s *Store) NormalizeLegacyConnectionStorage(ctx context.Context, cfg ManagerConfig, managerPresent bool, setup Setup, setupPresent bool) error {
+	return s.Settings.NormalizeLegacyConnectionStorage(ctx, cfg, managerPresent, setup, setupPresent)
+}
+
 func (s *Store) LoadManagerConfig(ctx context.Context) (ManagerConfig, bool, error) {
 	return s.Settings.LoadManagerConfig(ctx)
 }

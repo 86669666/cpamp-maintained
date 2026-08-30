@@ -27,6 +27,10 @@ http://<cpa-host>:8317/management.html
 
 The CPAMP Lightweight Panel does not connect to or read Manager Server SQLite and does not provide full historical monitoring, model prices, API key aliases, import/export, or server inspection history.
 
+## Usage event ledger contract
+
+`usage_events` is the authoritative event ledger and derived-data rebuilds must not delete event rows or rewrite raw payload and identity evidence. Some bounded compatibility migrations update normalized cache-accounting columns or parsed response-metadata columns in place so historical reads retain current semantics. Release notes therefore describe the ledger as authoritative, not fully immutable.
+
 ## What Manager Server Does
 
 Manager Server:
@@ -96,7 +100,7 @@ After setup:
 
 - Browser login uses the CPAMP admin key.
 - Setup/panel-saved CPA Management Keys are stored server-side and encrypted.
-- In installer env/secret mode, Manager Server reads the CPA URL and CPA Management Key from the deployment environment.
+- In a manual env/secret deployment, Manager Server reads the CPA URL and CPA Management Key from the deployment environment; the one-click installer imports that input once into encrypted SQLite configuration.
 - Manager Server uses the resolved CPA Management Key when calling CPA.
 - New browsers no longer need the CPA Management Key.
 
@@ -361,7 +365,7 @@ Security notes:
 - If `usage.sqlite` leaks without `data.key`, the saved CPA Management Key is not directly readable.
 - If both `usage.sqlite` and `data.key` leak, the saved CPA Management Key can be decrypted.
 - If `data.key` is lost, the saved CPA Management Key cannot be recovered.
-- If the CPA connection is env/secret-managed, also back up the secret files in the install directory.
+- For manual env/secret deployments, also back up the matching secret files. After a successful one-click import, back up SQLite together with `data.key`; keep the temporary secret for retry if the import failed or execution was skipped.
 - Request metadata may contain model names, endpoints, account labels, project snapshots, token usage, latency, and failure summaries.
 - Raw failure bodies stay local in SQLite. Normal APIs and JSONL exports expose sanitized summaries instead of raw diagnostic bodies.
 

@@ -106,7 +106,7 @@ describe('GitHub Actions workflow integrity', () => {
       'git fetch --force https://github.com/seakee/CPA-Manager-Plus.git'
     );
     expect(buildJob).toContain(
-      'test "$(git rev-list -n 1 v1.12.5)" = "b1179618bad2740ae6d441be9b1b1b800379cfc3"'
+      'test "$(git rev-list -n 1 v1.12.6)" = "c428c212b8d4f2db5c3a8c288e9fe3cbb5f6c650"'
     );
     expect(buildJob).toContain('scripts/build-maintained-lightweight.sh');
     expect(workflow).toContain('prerelease="$(bun - "${release_tag}"');
@@ -130,6 +130,15 @@ describe('GitHub Actions workflow integrity', () => {
 
     expect(workflow).not.toContain('actions/download-artifact');
     expect(workflow).not.toContain('actions/upload-artifact');
+    expect(buildJob).toContain('- name: Reject an existing Release');
+    expect(buildJob).toContain('/releases/tags/${RELEASE_TAG}');
+    expect(buildJob).toContain('if [ "${status}" = "404" ]');
+    expect(buildJob).toContain('if [ "${status}" = "200" ]');
+    expect(buildJob).toContain('already exists; refusing to rerun or overwrite assets');
+    expect(buildJob).toContain('Unable to prove Release ${RELEASE_TAG} is absent');
+    expect(buildJob.indexOf('- name: Reject an existing Release')).toBeLessThan(
+      buildJob.indexOf('- name: Create Release')
+    );
     expect(buildJob).toContain('overwrite_files: false');
     expect(buildJob).toContain("if: env.DRY_RUN != 'true'");
     expect(buildJob).toContain('test -s dist/release/metadata.json');

@@ -1,6 +1,13 @@
 import type { TFunction } from 'i18next';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  ANTIGRAVITY_CONFIG,
+  CLAUDE_CONFIG,
+  CODEX_CONFIG,
+  KIMI_CONFIG,
+  XAI_CONFIG,
+} from '@/components/quota';
+import {
   fetchAntigravityQuota,
   fetchClaudeQuota,
   fetchCodexQuota,
@@ -9,6 +16,8 @@ import {
 } from '@/utils/quota';
 import zhCN from '@/i18n/locales/zh-CN.json';
 import zhTW from '@/i18n/locales/zh-TW.json';
+import type { AntigravityQuotaState, ClaudeQuotaState, CodexQuotaState } from '@/types';
+import { getQuotaCredentialStoreKey } from '@/utils/quota/credentialScope';
 import type { MonitoringAccountQuotaTarget } from '@/features/monitoring/accountOverviewQuotaTargets';
 import type {
   AccountQuotaEntry,
@@ -21,6 +30,8 @@ import type {
 } from '@/features/monitoring/hooks/useMonitoringData';
 import {
   buildAccountOptions,
+  buildAccountQuotaEntryFromProviderState,
+  buildCachedAccountQuotaEntry,
   buildApiKeyOptionsFromRows,
   buildChannelOptionsFromValues,
   buildAccountQuotaRefreshFailureEntry,
@@ -31,8 +42,9 @@ import {
   buildSyncPriceModels,
   mergeObservedAccountQuotaEntry,
   mergeObservedAccountQuotaState,
-  requestAccountQuota,
+  mergeSharedAccountQuotaState,
   updateMonitoringAccountQuotaStateByRowId,
+  type MonitoringQuotaStores,
 } from './monitoringCenterPageModel';
 import { getDefaultMonitoringCenterUiState } from '@/features/monitoring/monitoringCenterUiState';
 
@@ -52,15 +64,14 @@ const t = ((key: string, options?: Record<string, unknown>) => {
   const copy: Record<string, string> = {
     'antigravity_quota.title': 'Antigravity Quota',
     'claude_quota.title': 'Claude Quota',
-    'claude_quota.plan_label': 'Plan',
-    'claude_quota.plan_pro': 'Pro',
+    'plans.label': 'Plan',
+    'plans.claude.pro': 'Pro',
     'claude_quota.extra_usage_label': 'Extra Usage',
     'claude_quota.empty_windows': 'No Claude quota data',
     'claude_quota.five_hour': '5-hour limit',
     'codex_quota.title': 'Codex Quota',
     'codex_quota.empty_windows': 'No Codex quota data',
-    'codex_quota.plan_label': 'Plan',
-    'codex_quota.plan_free': 'Free',
+    'plans.codex.free': 'Free',
     'codex_quota.monthly_window': 'Monthly limit',
     'codex_quota.window_usage_duration': '{{used}} / {{total}} used',
     'kimi_quota.title': 'Kimi Quota',
@@ -122,6 +133,116 @@ const createTarget = (
   },
   accountId: overrides.accountId ?? null,
   planType: overrides.planType ?? null,
+});
+
+const buildEntryFromMockedProviderFetch = async (
+  target: MonitoringAccountQuotaTarget,
+  translate: TFunction
+): Promise<AccountQuotaEntry> => {
+  let entry: AccountQuotaEntry | null;
+  switch (target.provider) {
+    case 'antigravity': {
+      const data = await fetchAntigravityQuota(target.file, translate);
+      entry = buildAccountQuotaEntryFromProviderState(
+        target,
+        ANTIGRAVITY_CONFIG.buildSuccessState(data, target.file),
+        translate
+      );
+      break;
+    }
+    case 'claude': {
+      const data = await fetchClaudeQuota(target.file, translate);
+      entry = buildAccountQuotaEntryFromProviderState(
+        target,
+        CLAUDE_CONFIG.buildSuccessState(data, target.file),
+        translate
+      );
+      break;
+    }
+    case 'codex': {
+      const data = await fetchCodexQuota(target.file, translate);
+      entry = buildAccountQuotaEntryFromProviderState(
+        target,
+        CODEX_CONFIG.buildSuccessState(data, target.file),
+        translate
+      );
+      break;
+    }
+    case 'kimi': {
+      const data = await fetchKimiQuota(target.file, translate);
+      entry = buildAccountQuotaEntryFromProviderState(
+        target,
+        KIMI_CONFIG.buildSuccessState(data, target.file),
+        translate
+      );
+      break;
+    }
+    case 'xai': {
+      const data = await fetchXaiQuota(target.file, translate);
+      entry = buildAccountQuotaEntryFromProviderState(
+        target,
+        XAI_CONFIG.buildSuccessState(data, target.file),
+        translate
+      );
+      break;
+    }
+  }
+  if (!entry) throw new Error(`No quota entry for ${target.provider}`);
+  return entry;
+};
+
+const emptyQuotaStores = (): MonitoringQuotaStores => ({
+  antigravityQuota: {},
+  claudeQuota: {},
+  codexQuota: {},
+  kimiQuota: {},
+  xaiQuota: {},
+});
+
+const codexState = (
+  file: MonitoringAccountQuotaTarget['file'],
+  usedPercent: number,
+  fetchedAtMs = 1_000
+): CodexQuotaState => ({
+  status: 'success',
+  authFileKey: getQuotaCredentialStoreKey(file),
+  authFileName: file.name,
+  authIndex: String(file.authIndex ?? file['auth_index'] ?? ''),
+  authFileIdentityVerified: true,
+  fetchedAtMs,
+  quotaInventoryObserved: true,
+  windows: [
+    {
+      id: 'weekly',
+      label: 'Weekly',
+      usedPercent,
+      resetLabel: 'tomorrow',
+    },
+  ],
+});
+
+const claudeState = (
+  file: MonitoringAccountQuotaTarget['file'],
+  usedPercent: number,
+  status: ClaudeQuotaState['status'] = 'success'
+): ClaudeQuotaState => ({
+  status,
+  authFileKey: getQuotaCredentialStoreKey(file),
+  authFileName: file.name,
+  authIndex: String(file.authIndex ?? file['auth_index'] ?? ''),
+  authFileIdentityVerified: true,
+  fetchedAtMs: 1_000,
+  windows: [
+    {
+      id: 'five-hour',
+      label: '5-hour',
+      usedPercent,
+      resetLabel: 'tomorrow',
+    },
+  ],
+  ...(status === 'error'
+    ? { error: 'temporary failure', errorStatus: 503, failedAtMs: 2_000 }
+    : {}),
 });
 
 const createMergeAccountQuotaEntry = (
@@ -330,6 +451,7 @@ describe('monitoringCenterPageModel account quota', () => {
     vi.mocked(fetchAntigravityQuota).mockReset();
     vi.mocked(fetchClaudeQuota).mockReset();
     vi.mocked(fetchCodexQuota).mockReset();
+    vi.mocked(fetchKimiQuota).mockReset();
     vi.mocked(fetchXaiQuota).mockReset();
   });
 
@@ -371,6 +493,260 @@ describe('monitoringCenterPageModel account quota', () => {
     });
   });
 
+  it('derives a Monitoring entry from the credential-scoped shared Provider state', () => {
+    const file = {
+      name: 'codex-shared.json',
+      type: 'codex',
+      provider: 'codex',
+      authIndex: '1',
+      account: 'same@example.com',
+    };
+    const target = createTarget({
+      key: 'codex::1::codex-shared.json',
+      provider: 'codex',
+      authIndex: '1',
+      fileName: file.name,
+      file,
+    });
+    const stores = emptyQuotaStores();
+    stores.codexQuota[getQuotaCredentialStoreKey(file)] = codexState(file, 25, 2_000);
+
+    const entry = buildCachedAccountQuotaEntry(target, stores, t);
+
+    expect(fetchCodexQuota).not.toHaveBeenCalled();
+    expect(entry).toMatchObject({
+      key: target.key,
+      provider: 'codex',
+      fetchedAtMs: 2_000,
+      windows: [{ id: 'weekly', remainingPercent: 75 }],
+    });
+  });
+
+  it('isolates same-email credentials across providers and same-provider files', () => {
+    const codexFile = {
+      name: 'codex.json',
+      type: 'codex',
+      provider: 'codex',
+      authIndex: '1',
+      account: 'same@example.com',
+    };
+    const antigravityFile = {
+      name: 'antigravity.json',
+      type: 'antigravity',
+      provider: 'antigravity',
+      authIndex: '1',
+      account: 'same@example.com',
+    };
+    const firstCodexFile = { ...codexFile, name: 'shared.json', authIndex: '1' };
+    const secondCodexFile = { ...codexFile, name: 'shared.json', authIndex: '2' };
+    const stores = emptyQuotaStores();
+    stores.codexQuota[getQuotaCredentialStoreKey(firstCodexFile)] = codexState(firstCodexFile, 10);
+    stores.codexQuota[getQuotaCredentialStoreKey(secondCodexFile)] = codexState(
+      secondCodexFile,
+      80
+    );
+    const antigravityState: AntigravityQuotaState = {
+      status: 'success',
+      authFileKey: getQuotaCredentialStoreKey(antigravityFile),
+      authFileName: antigravityFile.name,
+      authIndex: '1',
+      authFileIdentityVerified: true,
+      groups: [
+        {
+          id: 'agent',
+          label: 'Agent',
+          buckets: [{ id: 'daily', label: 'Daily', remainingFraction: 0.4 }],
+        },
+      ],
+    };
+    stores.antigravityQuota[getQuotaCredentialStoreKey(antigravityFile)] = antigravityState;
+
+    const firstCodexEntry = buildCachedAccountQuotaEntry(
+      createTarget({
+        key: 'codex::1::shared.json',
+        provider: 'codex',
+        authIndex: '1',
+        fileName: firstCodexFile.name,
+        file: firstCodexFile,
+      }),
+      stores,
+      t
+    );
+    const secondCodexEntry = buildCachedAccountQuotaEntry(
+      createTarget({
+        key: 'codex::2::shared.json',
+        provider: 'codex',
+        authIndex: '2',
+        fileName: secondCodexFile.name,
+        file: secondCodexFile,
+      }),
+      stores,
+      t
+    );
+    const antigravityEntry = buildCachedAccountQuotaEntry(
+      createTarget({
+        key: 'antigravity::1::antigravity.json',
+        provider: 'antigravity',
+        authIndex: '1',
+        fileName: antigravityFile.name,
+        file: antigravityFile,
+      }),
+      stores,
+      t
+    );
+
+    expect(firstCodexEntry?.windows[0]?.remainingPercent).toBe(90);
+    expect(secondCodexEntry?.windows[0]?.remainingPercent).toBe(20);
+    expect(antigravityEntry?.windows[0]?.remainingPercent).toBe(40);
+  });
+
+  it('uses shared Provider quota as the base while preserving partial Header evidence', () => {
+    const file = {
+      name: 'codex-header.json',
+      type: 'codex',
+      provider: 'codex',
+      authIndex: '1',
+    };
+    const target = createTarget({
+      key: 'codex::1::codex-header.json',
+      provider: 'codex',
+      authIndex: '1',
+      fileName: file.name,
+      file,
+    });
+    const stores = emptyQuotaStores();
+    stores.codexQuota[getQuotaCredentialStoreKey(file)] = {
+      ...codexState(file, 20),
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          usedPercent: 20,
+          resetLabel: 'tomorrow',
+          limitWindowSeconds: 604_800,
+        },
+        {
+          id: 'monthly',
+          label: 'Monthly',
+          usedPercent: 10,
+          resetLabel: 'next month',
+          limitWindowSeconds: 2_592_000,
+        },
+      ],
+    };
+    const sharedEntry = buildCachedAccountQuotaEntry(target, stores, t);
+    if (!sharedEntry) throw new Error('expected cached Provider entry');
+    const sharedState = mergeSharedAccountQuotaState(undefined, [target], [sharedEntry]);
+    const observedEntry: AccountQuotaEntry = {
+      ...sharedEntry,
+      planType: 'plus',
+      observedAtMs: 2_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly',
+          remainingPercent: 50,
+          resetLabel: 'later today',
+          resetAtMs: 2_500,
+          resetAccuracy: 'exact',
+          usageLabel: null,
+        },
+      ],
+    };
+
+    const finalState = mergeObservedAccountQuotaState(sharedState, [target], [observedEntry]);
+    const finalWindows = finalState?.entries[0]?.windows ?? [];
+
+    expect(finalState?.entries[0]).toMatchObject({
+      fetchedAtMs: 1_000,
+      observedAtMs: 2_000,
+      observedFromUsageHeaders: true,
+    });
+    expect(finalWindows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'weekly', remainingPercent: 50 }),
+        expect.objectContaining({ id: 'monthly', remainingPercent: 90 }),
+      ])
+    );
+    expect(stores.codexQuota[getQuotaCredentialStoreKey(file)]?.windows).toHaveLength(2);
+  });
+
+  it('does not let an older Header overwrite a newer Provider quota', () => {
+    const activeEntry: AccountQuotaEntry = {
+      ...createMergeAccountQuotaEntry('-', null),
+      fetchedAtMs: 2_000,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          remainingPercent: 50,
+          resetLabel: 'tomorrow',
+          usageLabel: 'Used 50%',
+        },
+        {
+          id: 'monthly',
+          label: 'Monthly limit',
+          remainingPercent: 80,
+          resetLabel: 'next month',
+          usageLabel: 'Used 20%',
+        },
+      ],
+    };
+    const observedEntry: AccountQuotaEntry = {
+      ...activeEntry,
+      observedAtMs: 1_000,
+      observedFromUsageHeaders: true,
+      windows: [
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          remainingPercent: 80,
+          resetLabel: 'later today',
+          usageLabel: 'Used 20%',
+        },
+      ],
+    };
+
+    const merged = mergeObservedAccountQuotaEntry(activeEntry, observedEntry);
+
+    expect(merged).toBe(activeEntry);
+    expect(merged?.windows).toEqual(activeEntry.windows);
+  });
+
+  it('keeps a shared refresh failure visible with the previous Provider quota', () => {
+    const file = {
+      name: 'claude-failure.json',
+      type: 'claude',
+      provider: 'claude',
+      authIndex: '1',
+    };
+    const target = createTarget({
+      key: 'claude::1::claude-failure.json',
+      provider: 'claude',
+      authIndex: '1',
+      fileName: file.name,
+      file,
+    });
+    const stores = emptyQuotaStores();
+    const failedState = claudeState(file, 25, 'error');
+    stores.claudeQuota[getQuotaCredentialStoreKey(file)] = failedState;
+
+    const entry = buildCachedAccountQuotaEntry(target, stores, t);
+    const state = mergeSharedAccountQuotaState(undefined, [target], entry ? [entry] : []);
+
+    expect(entry).toMatchObject({
+      error: 'temporary failure',
+      errorStatus: 503,
+      windows: [{ id: 'five-hour', remainingPercent: 75 }],
+      failedAtMs: 2_000,
+    });
+    expect(state).toMatchObject({
+      status: 'error',
+      entries: [{ windows: [{ remainingPercent: 75 }] }],
+    });
+  });
+
   it('maps Claude usage windows into account quota entries', async () => {
     vi.mocked(fetchClaudeQuota).mockResolvedValue({
       quotaInventoryObserved: true,
@@ -400,7 +776,7 @@ describe('monitoringCenterPageModel account quota', () => {
       },
     });
 
-    const entry = await requestAccountQuota(createTarget({ provider: 'claude' }), t);
+    const entry = await buildEntryFromMockedProviderFetch(createTarget({ provider: 'claude' }), t);
 
     expect(entry).toMatchObject({
       provider: 'claude',
@@ -447,7 +823,7 @@ describe('monitoringCenterPageModel account quota', () => {
       ],
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({
         provider: 'codex',
         authIndex: '2',
@@ -1005,7 +1381,7 @@ describe('monitoringCenterPageModel account quota', () => {
     });
   });
 
-  it('merges older header entries into failed account quota state without clearing the failure', () => {
+  it('does not let older Header evidence overwrite a newer Provider failure', () => {
     const target = createTarget({
       provider: 'codex',
       key: 'codex::2::codex.json',
@@ -1077,14 +1453,14 @@ describe('monitoringCenterPageModel account quota', () => {
       failedAtMs: 2_000,
       entries: [
         {
-          planType: 'plus',
+          planType: 'free',
           error: '502 bad gateway',
           failedAtMs: 2_000,
           windows: [
             {
               id: 'monthly',
-              remainingPercent: 55,
-              resetLabel: '07/01 02:00',
+              remainingPercent: 95,
+              resetLabel: '06/30 12:00',
             },
             {
               id: 'spark-five-hour-0',
@@ -1266,6 +1642,11 @@ describe('monitoringCenterPageModel account quota', () => {
     vi.mocked(fetchAntigravityQuota).mockResolvedValue({
       quotaInventoryObserved: true,
       serverTimeOffsetMs: null,
+      subscription: {
+        plan: 'pro',
+        tierName: 'Antigravity Pro',
+        tierId: 'g1-pro-tier',
+      },
       groups: [
         {
           id: 'agent',
@@ -1290,7 +1671,7 @@ describe('monitoringCenterPageModel account quota', () => {
       ],
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({
         provider: 'antigravity',
         authIndex: '2',
@@ -1299,6 +1680,7 @@ describe('monitoringCenterPageModel account quota', () => {
       t
     );
 
+    expect(entry.planType).toBe('pro');
     expect(entry.metaLabels).toEqual(['Antigravity Quota']);
     expect(entry.windows).toMatchObject([
       {
@@ -1318,6 +1700,30 @@ describe('monitoringCenterPageModel account quota', () => {
     ]);
   });
 
+  it('falls back to Antigravity tier metadata when the normalized plan is unknown', async () => {
+    vi.mocked(fetchAntigravityQuota).mockResolvedValue({
+      quotaInventoryObserved: true,
+      serverTimeOffsetMs: null,
+      subscription: {
+        plan: 'unknown',
+        tierName: 'Antigravity Future',
+        tierId: 'future-tier',
+      },
+      groups: [],
+    });
+
+    const entry = await buildEntryFromMockedProviderFetch(
+      createTarget({
+        provider: 'antigravity',
+        authIndex: '2',
+        fileName: 'antigravity.json',
+      }),
+      t
+    );
+
+    expect(entry.planType).toBe('Antigravity Future');
+  });
+
   it('maps Kimi quota rows without amount labels in account quota entries', async () => {
     vi.mocked(fetchKimiQuota).mockResolvedValue({
       quotaInventoryObserved: true,
@@ -1334,7 +1740,7 @@ describe('monitoringCenterPageModel account quota', () => {
       ],
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({
         provider: 'kimi',
         authIndex: '4',
@@ -1375,7 +1781,7 @@ describe('monitoringCenterPageModel account quota', () => {
       usedPercent: 100,
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({
         provider: 'xai',
         authIndex: '3',
@@ -1427,7 +1833,7 @@ describe('monitoringCenterPageModel account quota', () => {
       usedPercent: 25,
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({
         provider: 'xai',
         authIndex: '3',
@@ -1486,7 +1892,7 @@ describe('monitoringCenterPageModel account quota', () => {
       usedPercent: 25,
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({
         provider: 'xai',
         authIndex: '3',
@@ -1523,7 +1929,7 @@ describe('monitoringCenterPageModel account quota', () => {
       usedPercent: null,
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
       t
     );
@@ -1548,7 +1954,7 @@ describe('monitoringCenterPageModel account quota', () => {
       usedPercent: null,
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
       t
     );
@@ -1571,7 +1977,7 @@ describe('monitoringCenterPageModel account quota', () => {
       usedPercent: null,
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({ provider: 'xai', authIndex: '3', fileName: 'xai.json' }),
       t
     );
@@ -1599,7 +2005,7 @@ describe('monitoringCenterPageModel account quota', () => {
       },
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({ provider: 'xai', authIndex: '3', fileName: 'paid-xai.json' }),
       t
     );
@@ -1636,7 +2042,7 @@ describe('monitoringCenterPageModel account quota', () => {
       ],
     });
 
-    const entry = await requestAccountQuota(
+    const entry = await buildEntryFromMockedProviderFetch(
       createTarget({
         provider: 'xai',
         authIndex: '3',

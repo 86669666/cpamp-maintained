@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/security"
 )
 
 func TestDataSourceNameEncodesWindowsDrivePath(t *testing.T) {
@@ -141,6 +144,154 @@ func TestOpenWithOptionsBeginsWriteTransactionsImmediately(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("competing write did not resume after transaction release")
+	}
+}
+
+func TestRequireExistingDataKeyRejectsMissingKeyForEncryptedCPAConnection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	protector, err := security.NewProtector([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil {
+		t.Fatalf("create protector: %v", err)
+	}
+	db, err := sql.Open("sqlite", dataSourceName(dbPath))
+	if err != nil {
+		t.Fatalf("open fixture sqlite: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("migrate fixture sqlite: %v", err)
+	}
+	// Keep this fixture at the raw storage boundary: the guard must recognize
+	// the encrypted envelope without opening the normal protected Store.
+	protected, err := protector.ProtectString("cpa-management-key")
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("protect fixture key: %v", err)
+	}
+	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values(?, ?, 1)`,
+		"manager_config_v1",
+		`{"cpaConnection":{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"`+protected+`"}}`,
+	); err != nil {
+		_ = db.Close()
+		t.Fatalf("write encrypted fixture setting: %v", err)
+	}
+	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values(?, ?, 1)`,
+		"bootstrap_state_v1",
+		`{"connectionStorageMigrationVersion":2}`,
+	); err != nil {
+		_ = db.Close()
+		t.Fatalf("write migrated bootstrap state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture sqlite: %v", err)
+	}
+
+	dataKeyPath := filepath.Join(t.TempDir(), "missing-data.key")
+	err = RequireExistingDataKeyForEncryptedCPAConnection(
+		context.Background(),
+		dbPath,
+		"",
+		dataKeyPath,
+	)
+	if err == nil || !strings.Contains(err.Error(), "data key is missing") {
+		t.Fatalf("missing data key guard error = %v", err)
+	}
+	if _, statErr := os.Stat(dataKeyPath); !os.IsNotExist(statErr) {
+		t.Fatalf("guard unexpectedly created data key: %v", statErr)
+	}
+}
+
+func TestRequireExistingDataKeyAllowsLegacyPrefixPlaintext(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+	db, err := sql.Open("sqlite", dataSourceName(dbPath))
+	if err != nil {
+		t.Fatalf("open fixture sqlite: %v", err)
+	}
+	if err := Migrate(db); err != nil {
+		_ = db.Close()
+		t.Fatalf("migrate fixture sqlite: %v", err)
+	}
+	if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values(?, ?, 1)`,
+		"manager_config_v1",
+		`{"cpaConnection":{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"enc:v1:legacy-real-key"}}`,
+	); err != nil {
+		_ = db.Close()
+		t.Fatalf("write legacy fixture setting: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close fixture sqlite: %v", err)
+	}
+
+	if err := RequireExistingDataKeyForEncryptedCPAConnection(
+		context.Background(),
+		dbPath,
+		"",
+		filepath.Join(t.TempDir(), "new-data.key"),
+	); err != nil {
+		t.Fatalf("legacy prefix plaintext incorrectly rejected: %v", err)
+	}
+}
+
+func TestInspectPersistedCPAConnectionStorageRejectsInvalidPostV2ManagementKey(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{
+			name:  "setup malformed envelope",
+			key:   "setup",
+			value: `{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"enc:v1:broken"}`,
+		},
+		{
+			name:  "manager config malformed envelope",
+			key:   "manager_config_v1",
+			value: `{"cpaConnection":{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"enc:v1:broken"}}`,
+		},
+		{
+			name:  "setup plaintext",
+			key:   "setup",
+			value: `{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"plain-old-key"}`,
+		},
+		{
+			name:  "manager config plaintext",
+			key:   "manager_config_v1",
+			value: `{"cpaConnection":{"cpaBaseUrl":"http://cpa.local:8317","managementKey":"plain-old-key"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "usage.sqlite")
+			db, err := sql.Open("sqlite", dataSourceName(dbPath))
+			if err != nil {
+				t.Fatalf("open fixture sqlite: %v", err)
+			}
+			if err := Migrate(db); err != nil {
+				_ = db.Close()
+				t.Fatalf("migrate fixture sqlite: %v", err)
+			}
+			for _, setting := range []struct {
+				key   string
+				value string
+			}{
+				{key: "bootstrap_state_v1", value: `{"connectionStorageMigrationVersion":2}`},
+				{key: tt.key, value: tt.value},
+			} {
+				if _, err := db.Exec(`insert into settings(key, value, updated_at_ms) values(?, ?, 1)`, setting.key, setting.value); err != nil {
+					_ = db.Close()
+					t.Fatalf("write fixture setting %s: %v", setting.key, err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("close fixture sqlite: %v", err)
+			}
+
+			_, err = InspectPersistedCPAConnectionStorage(context.Background(), dbPath)
+			if err == nil || !strings.Contains(err.Error(), "corrupted persisted CPA connection") {
+				t.Fatalf("inspection error = %v, want corrupted persisted CPA connection", err)
+			}
+		})
 	}
 }
 

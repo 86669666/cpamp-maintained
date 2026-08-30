@@ -477,6 +477,7 @@ const { mocks } = vi.hoisted(() => {
         setXaiQuota: vi.fn(),
       },
       t: (key: string, options?: Record<string, unknown>) => {
+        if (key === 'auth_files.codex_plan_filter_unknown') return 'Unknown plan';
         if (!options) return key;
         const parts: string[] = [];
         if (typeof options.name === 'string') parts.push(options.name);
@@ -3519,8 +3520,8 @@ describe('AccountsPage replacement flows', () => {
     if (!planSelect) throw new Error('Accounts plan filter not found');
 
     expect(planSelect.props.options).toContainEqual({
-      value: 'unknown',
-      label: 'auth_files.codex_plan_filter_unknown',
+      value: 'codex:unknown',
+      label: 'Unknown plan',
     });
     await act(async () => {
       planSelect.props.onChange('unknown');
@@ -3537,6 +3538,103 @@ describe('AccountsPage replacement flows', () => {
         'data-account-card': getAuthFileSelectionKey(mocks.files[1]),
       })
     ).toHaveLength(1);
+  });
+
+  it('keeps a stale selected plan option visible when its account row disappears', async () => {
+    const claudeFile = {
+      name: 'claude-pro.json',
+      type: 'claude',
+      provider: 'claude',
+      account: 'claude@example.com',
+      id_token: { planType: 'plan_pro' },
+      disabled: false,
+    } as AuthFileItem;
+    const codexFile = {
+      ...makeCodexFile('codex-pro.json', 'codex-auth', 'codex@example.com'),
+      planType: 'pro',
+    } as AuthFileItem;
+    mocks.files = [claudeFile, codexFile];
+
+    const renderer = await renderAccountsPage();
+    const getPlanSelect = () => {
+      const select = renderer.root
+        .findAllByType(Select)
+        .find((node) => node.props.ariaLabel === 'accounts.plan_filter');
+      if (!select) throw new Error('Accounts plan filter not found');
+      return select;
+    };
+
+    await act(async () => {
+      getPlanSelect().props.onChange('pro');
+      await Promise.resolve();
+    });
+    expect(getPlanSelect().props.value).toBe('pro');
+    expect(getPlanSelect().props.options).toContainEqual({ value: 'pro', label: 'Pro' });
+    expect(getAccountListItemTexts(renderer)).toHaveLength(1);
+    expect(getAccountListItemTexts(renderer)[0]).toContain('claude-pro.json');
+
+    mocks.files = [codexFile];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+
+    const updatedSelect = getPlanSelect();
+    expect(updatedSelect.props.value).toBe('pro');
+    expect(updatedSelect.props.options).toContainEqual({ value: 'pro', label: 'Pro' });
+    expect(updatedSelect.props.options).not.toContainEqual({ value: 'pro', label: 'Pro 20x' });
+    expect(
+      renderer.root.findAll(
+        (node) => node.type === 'article' && typeof node.props['data-account-card'] === 'string'
+      )
+    ).toHaveLength(0);
+  });
+
+  it('keeps a scoped unknown filter readable after its account row disappears', async () => {
+    const antigravityFile = {
+      name: 'antigravity-future.json',
+      type: 'antigravity',
+      provider: 'antigravity',
+      authIndex: 'antigravity-auth',
+      account: 'antigravity@example.com',
+      planType: 'Antigravity Future',
+      disabled: false,
+    } as AuthFileItem;
+    mocks.files = [antigravityFile];
+
+    const renderer = await renderAccountsPage();
+    const getPlanSelect = () => {
+      const select = renderer.root
+        .findAllByType(Select)
+        .find((node) => node.props.ariaLabel === 'accounts.plan_filter');
+      if (!select) throw new Error('Accounts plan filter not found');
+      return select;
+    };
+    const canonical = 'unknown:antigravity:antigravity future';
+
+    await act(async () => {
+      getPlanSelect().props.onChange(canonical);
+      await Promise.resolve();
+    });
+    expect(getPlanSelect().props.value).toBe(canonical);
+    expect(getPlanSelect().props.options).toContainEqual({
+      value: canonical,
+      label: 'Antigravity Future',
+    });
+
+    mocks.files = [makeCodexFile('other.json', 'other-auth', 'other@example.com')];
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+
+    const updatedSelect = getPlanSelect();
+    expect(updatedSelect.props.value).toBe(canonical);
+    const selectedOption = updatedSelect.props.options.find(
+      (option: { value: string }) => option.value === canonical
+    );
+    expect(selectedOption?.label).toBe('antigravity future');
+    expect(selectedOption?.label).not.toContain('unknown:antigravity:');
   });
 
   it('updates the accounts view query when switching views', async () => {

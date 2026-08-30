@@ -137,6 +137,34 @@ describe('accountsWorkspaceUrlState', () => {
     expect(state.accountSort).toEqual({ key: 'name', direction: 'desc' });
   });
 
+  it('round-trips provider-scoped plan filters and keeps legacy aliases', () => {
+    const scopedSearch = writeAccountsWorkspaceUrlSearch(
+      '',
+      {
+        ...DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE,
+        view: 'accounts',
+        healthMode: 'local',
+        planFilter: 'claude:pro',
+        account: null,
+        detailTab: 'overview',
+        editor: null,
+        editorProvider: '',
+      },
+      DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE
+    );
+
+    expect(scopedSearch).toBe('?plan=claude%3Apro');
+    expect(
+      readAccountsWorkspaceUrlState(scopedSearch, DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE).planFilter
+    ).toBe('claude:pro');
+    expect(
+      readAccountsWorkspaceUrlState(
+        '?provider=claude&plan=pro',
+        DEFAULT_ACCOUNTS_WORKSPACE_UI_STATE
+      )
+    ).toMatchObject({ providerFilter: 'claude', planFilter: 'pro' });
+  });
+
   it('round-trips precise Codex status filters', () => {
     const search = writeAccountsWorkspaceUrlSearch(
       '',

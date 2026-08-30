@@ -8,6 +8,7 @@ import type {
   CodexInspectionRun,
   CodexInspectionRunDetail,
   ManagerConfig,
+  UsageHeaderSnapshot,
 } from '@/services/api/usageService';
 import { CodexInspectionStopButton } from '@/features/monitoring/components/CodexInspectionStopButton';
 import {
@@ -222,7 +223,16 @@ describe('ServerCodexInspectionPage quota mapping', () => {
       ],
     };
 
-    const mapped = toServerResultItem(item, t, undefined, 'en');
+    const mapped = toServerResultItem(
+      item,
+      t,
+      {
+        event_hash: 'header-event',
+        timestamp_ms: resetAtMs,
+        header_quota_plan_type: 'self_serve_business_prolite',
+      } satisfies UsageHeaderSnapshot,
+      'en'
+    );
 
     expect(mapped.quotaWindows).toEqual([
       expect.objectContaining({
@@ -231,6 +241,10 @@ describe('ServerCodexInspectionPage quota mapping', () => {
         resetAccuracy: 'exact',
       }),
     ]);
+    expect(mapped.observedHeaderEvidence?.join(' · ')).toContain('Business Premium 5x');
+    expect(mapped.observedHeaderEvidence?.join(' · ')).not.toContain(
+      'self_serve_business_prolite'
+    );
   });
 });
 

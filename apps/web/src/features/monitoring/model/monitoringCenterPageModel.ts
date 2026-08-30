@@ -1,11 +1,16 @@
 import type { TFunction } from 'i18next';
 import type {
   AntigravityQuotaGroup,
+  AntigravityQuotaState,
   AuthFileItem,
+  ClaudeQuotaState,
   ClaudeQuotaWindow,
+  CodexQuotaState,
   CodexQuotaWindow,
+  KimiQuotaState,
   KimiQuotaRow,
   XaiBillingSummary,
+  XaiQuotaState,
 } from '@/types';
 import type { UsageHeaderSnapshot } from '@/services/api/usageService';
 import type {
@@ -25,10 +30,8 @@ import type {
   AccountQuotaState,
   AccountQuotaWindow,
 } from '@/features/monitoring/components/accountOverviewPresentation';
-import {
-  formatPercent,
-  getCodexPlanLabel,
-} from '@/features/monitoring/components/accountOverviewPresentation';
+import { formatPercent } from '@/features/monitoring/components/accountOverviewPresentation';
+import { getPlanPresentation, resolveAntigravityPlanType } from '@/utils/plans';
 import type { SummaryCardProps } from '@/features/monitoring/components/MonitoringShared';
 import type {
   MonitoringAccountQuotaProvider,
@@ -36,11 +39,6 @@ import type {
 } from '@/features/monitoring/accountOverviewQuotaTargets';
 import { formatStatusWindowLabel } from '@/features/monitoring/model/statusWindow';
 import {
-  fetchAntigravityQuota,
-  fetchClaudeQuota,
-  fetchCodexQuota,
-  fetchKimiQuota,
-  fetchXaiQuota,
   buildCodexQuotaWindowInfos,
   filterFreshCodexQuotaWindows,
   formatKimiResetHint,
@@ -49,6 +47,7 @@ import {
   findCodexProviderWindowMatch,
   resolveCodexUsageQuotaScope,
 } from '@/utils/quota';
+import { getCredentialScopedQuotaState } from '@/utils/quota/credentialScope';
 import {
   buildObservedCodexQuotaFromHeaderSnapshot,
   getHeaderSnapshotErrorCode,
@@ -934,6 +933,20 @@ const getMergeableAccountQuotaEntry = (
   return mergeableEntry;
 };
 
+const isObservedAccountQuotaEvidenceNewer = (
+  activeEntry: AccountQuotaEntry,
+  observedEntry: AccountQuotaEntry
+) => {
+  const observedTime = readFiniteTimestamp(observedEntry.observedAtMs);
+  if (observedTime === null) return true;
+
+  const failureTime = readFiniteTimestamp(activeEntry.failedAtMs);
+  if (failureTime !== null) return observedTime > failureTime;
+
+  const providerTime = readFiniteTimestamp(activeEntry.fetchedAtMs);
+  return providerTime === null || observedTime > providerTime;
+};
+
 export const mergeObservedAccountQuotaEntry = (
   activeEntry: AccountQuotaEntry | undefined,
   observedEntry: AccountQuotaEntry | null
@@ -941,6 +954,9 @@ export const mergeObservedAccountQuotaEntry = (
   const mergeableActiveEntry = getMergeableAccountQuotaEntry(activeEntry);
   if (!mergeableActiveEntry) return observedEntry;
   if (!observedEntry || observedEntry.error) return mergeableActiveEntry;
+  if (!isObservedAccountQuotaEvidenceNewer(activeEntry ?? mergeableActiveEntry, observedEntry)) {
+    return mergeableActiveEntry;
+  }
 
   return {
     ...mergeableActiveEntry,
@@ -1063,6 +1079,59 @@ export const mergeObservedAccountQuotaState = (
     entries,
     error: firstError || '',
     failedAtMs: firstError ? state.failedAtMs : undefined,
+  };
+};
+
+export const mergeSharedAccountQuotaState = (
+  state: AccountQuotaState | undefined,
+  targets: MonitoringAccountQuotaTarget[],
+  sharedEntries: AccountQuotaEntry[]
+): AccountQuotaState | undefined => {
+  const targetKey = targets.map((target) => target.key).join('|');
+  if (state?.status === 'loading' && state.targetKey === targetKey) return state;
+
+  const previousEntriesByKey =
+    state?.targetKey === targetKey
+      ? new Map(state.entries.map((entry) => [entry.key, entry]))
+      : new Map<string, AccountQuotaEntry>();
+  const sharedEntriesByKey = new Map(sharedEntries.map((entry) => [entry.key, entry]));
+  const entries = targets
+    .map((target) => {
+      const previousEntry = previousEntriesByKey.get(target.key);
+      const sharedEntry = sharedEntriesByKey.get(target.key);
+      if (!sharedEntry) return previousEntry;
+      if (!sharedEntry.error || !previousEntry) return sharedEntry;
+
+      // A failed shared refresh must not erase the row's last visible quota,
+      // especially for providers whose generic error state has no payload.
+      return {
+        ...previousEntry,
+        ...sharedEntry,
+        windows: sharedEntry.windows.length > 0 ? sharedEntry.windows : previousEntry.windows,
+      };
+    })
+    .filter((entry): entry is AccountQuotaEntry => Boolean(entry));
+
+  if (entries.length === 0) {
+    return state?.targetKey === targetKey ? state : undefined;
+  }
+
+  const firstError = entries.find((entry) => entry.error);
+  const latestFetchedAt = entries.reduce(
+    (latest, entry) => Math.max(latest, entry.fetchedAtMs ?? 0),
+    0
+  );
+  const previousRefreshedAt = state?.lastRefreshedAt ?? 0;
+  return {
+    status: firstError ? 'error' : 'success',
+    targetKey,
+    entries,
+    error: firstError?.error ?? '',
+    failedAtMs: firstError?.failedAtMs,
+    lastRefreshedAt:
+      Math.max(previousRefreshedAt, latestFetchedAt) > 0
+        ? Math.max(previousRefreshedAt, latestFetchedAt)
+        : undefined,
   };
 };
 
@@ -1276,10 +1345,191 @@ const buildBaseAccountQuotaEntry = (
   };
 };
 
-const stampAccountQuotaFetchTime = <T extends AccountQuotaEntry>(entry: T): T => ({
+export type MonitoringQuotaStores = {
+  antigravityQuota: Record<string, AntigravityQuotaState>;
+  claudeQuota: Record<string, ClaudeQuotaState>;
+  codexQuota: Record<string, CodexQuotaState>;
+  kimiQuota: Record<string, KimiQuotaState>;
+  xaiQuota: Record<string, XaiQuotaState>;
+};
+
+export type MonitoringProviderQuotaState =
+  | AntigravityQuotaState
+  | ClaudeQuotaState
+  | CodexQuotaState
+  | KimiQuotaState
+  | XaiQuotaState;
+
+type ProviderQuotaStateMetadata = {
+  fetchedAtMs?: number;
+  failedAtMs?: number;
+  error?: string;
+  errorStatus?: number;
+  quotaInventoryObserved?: boolean;
+};
+
+const applyProviderQuotaStateMetadata = (
+  entry: AccountQuotaEntry,
+  state: ProviderQuotaStateMetadata
+): AccountQuotaEntry => ({
   ...entry,
-  fetchedAtMs: Date.now(),
+  ...(state.fetchedAtMs !== undefined ? { fetchedAtMs: state.fetchedAtMs } : {}),
+  ...(state.failedAtMs !== undefined ? { failedAtMs: state.failedAtMs } : {}),
+  ...(state.error ? { error: state.error } : {}),
+  ...(state.errorStatus !== undefined ? { errorStatus: state.errorStatus } : {}),
+  ...(state.quotaInventoryObserved !== undefined
+    ? { quotaInventoryObserved: state.quotaInventoryObserved }
+    : {}),
 });
+
+/**
+ * Converts one provider-owned quota state into Monitoring's presentation
+ * entry. Provider state remains the source of truth; this function does not
+ * reconstruct provider state from an AccountQuotaEntry.
+ */
+export const buildAccountQuotaEntryFromProviderState = (
+  target: MonitoringAccountQuotaTarget,
+  state: MonitoringProviderQuotaState | undefined,
+  t: TFunction
+): AccountQuotaEntry | null => {
+  if (!state || state.status === 'idle' || state.status === 'loading') return null;
+
+  switch (target.provider) {
+    case 'antigravity': {
+      const quota = state as AntigravityQuotaState;
+      const planType = resolveAntigravityPlanType(quota.subscription, target.planType);
+      return applyProviderQuotaStateMetadata(
+        {
+          ...buildBaseAccountQuotaEntry({ ...target, planType }, t),
+          planType,
+          windows: buildAntigravityAccountQuotaWindows(quota.groups),
+        },
+        quota
+      );
+    }
+    case 'claude': {
+      const quota = state as ClaudeQuotaState;
+      const metaLabels: string[] = [];
+      const planType = quota.planType ?? target.planType;
+      const planLabel = getPlanPresentation({ provider: target.provider, planType, t })?.shortLabel;
+      if (planLabel) {
+        metaLabels.push(`${t('plans.label')}: ${planLabel}`);
+      }
+      if (quota.extraUsage?.is_enabled) {
+        metaLabels.push(
+          `${t('claude_quota.extra_usage_label')}: $${(quota.extraUsage.used_credits / 100).toFixed(2)} / $${(quota.extraUsage.monthly_limit / 100).toFixed(2)}`
+        );
+      }
+      return applyProviderQuotaStateMetadata(
+        {
+          ...buildBaseAccountQuotaEntry(
+            { ...target, planType },
+            t,
+            metaLabels
+          ),
+          planType,
+          windows: buildClaudeAccountQuotaWindows(quota.windows, t),
+        },
+        quota
+      );
+    }
+    case 'kimi': {
+      const quota = state as KimiQuotaState;
+      return applyProviderQuotaStateMetadata(
+        {
+          ...buildBaseAccountQuotaEntry(target, t),
+          windows: buildKimiAccountQuotaWindows(quota.rows, t),
+        },
+        quota
+      );
+    }
+    case 'xai': {
+      const quota = state as XaiQuotaState;
+      const billing = quota.billing;
+      const metaLabels: string[] = [];
+      if (billing?.officialApiHealth) {
+        metaLabels.push(t('xai_quota.official_api_health'));
+      } else if (billing?.onDemandCapCents !== null && billing?.onDemandCapCents !== undefined) {
+        metaLabels.push(
+          `${t('xai_quota.on_demand_cap')}: ${formatXaiCurrency(billing.onDemandCapCents)}`
+        );
+      }
+      if (billing?.partial) {
+        metaLabels.push(
+          t('xai_quota.partial_data', {
+            details: formatXaiBillingDiagnostics(billing.diagnostics, t),
+          })
+        );
+      }
+      return applyProviderQuotaStateMetadata(
+        {
+          ...buildBaseAccountQuotaEntry(target, t, metaLabels),
+          windows:
+            billing?.officialApiHealth || !billing ? [] : buildXaiAccountQuotaWindows(billing, t),
+        },
+        quota
+      );
+    }
+    case 'codex':
+    default: {
+      const quota = state as CodexQuotaState;
+      const planType = quota.planType ?? target.planType;
+      const planLabel = getPlanPresentation({ provider: target.provider, planType, t })?.shortLabel;
+      return applyProviderQuotaStateMetadata(
+        {
+          ...buildBaseAccountQuotaEntry(
+            { ...target, planType },
+            t,
+            planLabel ? [`${t('plans.label')}: ${planLabel}`] : []
+          ),
+          planType,
+          windows: buildCodexAccountQuotaWindows(quota.windows, t),
+          observedAtMs: quota.observedAtMs,
+        },
+        quota
+      );
+    }
+  }
+};
+
+export const buildCachedAccountQuotaEntry = (
+  target: MonitoringAccountQuotaTarget,
+  stores: MonitoringQuotaStores,
+  t: TFunction
+): AccountQuotaEntry | null => {
+  switch (target.provider) {
+    case 'antigravity':
+      return buildAccountQuotaEntryFromProviderState(
+        target,
+        getCredentialScopedQuotaState(stores.antigravityQuota, target.file),
+        t
+      );
+    case 'claude':
+      return buildAccountQuotaEntryFromProviderState(
+        target,
+        getCredentialScopedQuotaState(stores.claudeQuota, target.file),
+        t
+      );
+    case 'codex':
+      return buildAccountQuotaEntryFromProviderState(
+        target,
+        getCredentialScopedQuotaState(stores.codexQuota, target.file),
+        t
+      );
+    case 'kimi':
+      return buildAccountQuotaEntryFromProviderState(
+        target,
+        getCredentialScopedQuotaState(stores.kimiQuota, target.file),
+        t
+      );
+    case 'xai':
+      return buildAccountQuotaEntryFromProviderState(
+        target,
+        getCredentialScopedQuotaState(stores.xaiQuota, target.file),
+        t
+      );
+  }
+};
 
 export const buildAccountQuotaErrorEntry = (
   target: MonitoringAccountQuotaTarget,
@@ -1308,7 +1558,7 @@ export const buildObservedCodexAccountQuotaEntry = (
       requestedModel: snapshot?.requested_model,
       resolvedModel: snapshot?.resolved_model,
     });
-  const planLabel = getCodexPlanLabel(planType, t);
+  const planLabel = getPlanPresentation({ provider: target.provider, planType, t })?.shortLabel;
   const observedAtMs = readFiniteTimestamp(snapshot?.timestamp_ms) ?? undefined;
   const observedAt = observedAtMs ? new Date(observedAtMs).toLocaleString() : '';
   const usedPercent = getHeaderSnapshotUsedPercent(snapshot);
@@ -1317,7 +1567,7 @@ export const buildObservedCodexAccountQuotaEntry = (
   const errorCode = getHeaderSnapshotErrorCode(snapshot);
   const traceID = getHeaderSnapshotTraceId(snapshot);
   const metaLabels = [
-    planLabel ? `${t('codex_quota.plan_label')}: ${planLabel}` : '',
+    planLabel ? `${t('plans.label')}: ${planLabel}` : '',
     observedAt
       ? t('monitoring.observed_from_usage_headers_at', {
           time: observedAt,
@@ -1395,85 +1645,6 @@ export const buildObservedCodexAccountQuotaEntry = (
     observedFromUsageHeaders: true,
   };
 };
-
-export const requestAccountQuota = async (
-  target: MonitoringAccountQuotaTarget,
-  t: TFunction
-): Promise<AccountQuotaEntry> => {
-  switch (target.provider) {
-    case 'antigravity': {
-      const { groups } = await fetchAntigravityQuota(target.file, t);
-      return stampAccountQuotaFetchTime({
-        ...buildBaseAccountQuotaEntry(target, t),
-        windows: buildAntigravityAccountQuotaWindows(groups),
-      });
-    }
-    case 'claude': {
-      const quota = await fetchClaudeQuota(target.file, t);
-      const metaLabels: string[] = [];
-      if (quota.planType) {
-        metaLabels.push(`${t('claude_quota.plan_label')}: ${t(`claude_quota.${quota.planType}`)}`);
-      }
-      if (quota.extraUsage?.is_enabled) {
-        metaLabels.push(
-          `${t('claude_quota.extra_usage_label')}: $${(quota.extraUsage.used_credits / 100).toFixed(2)} / $${(quota.extraUsage.monthly_limit / 100).toFixed(2)}`
-        );
-      }
-      return stampAccountQuotaFetchTime({
-        ...buildBaseAccountQuotaEntry(target, t, metaLabels),
-        planType: quota.planType ?? target.planType,
-        windows: buildClaudeAccountQuotaWindows(quota.windows, t),
-      });
-    }
-    case 'kimi': {
-      const { rows } = await fetchKimiQuota(target.file, t);
-      return stampAccountQuotaFetchTime({
-        ...buildBaseAccountQuotaEntry(target, t),
-        windows: buildKimiAccountQuotaWindows(rows, t),
-      });
-    }
-    case 'xai': {
-      const billing = await fetchXaiQuota(target.file, t);
-      const metaLabels: string[] = [];
-      if (billing.officialApiHealth) {
-        metaLabels.push(t('xai_quota.official_api_health'));
-      } else if (billing.onDemandCapCents !== null) {
-        metaLabels.push(
-          `${t('xai_quota.on_demand_cap')}: ${formatXaiCurrency(billing.onDemandCapCents)}`
-        );
-      }
-      if (billing.partial) {
-        metaLabels.push(
-          t('xai_quota.partial_data', {
-            details: formatXaiBillingDiagnostics(billing.diagnostics, t),
-          })
-        );
-      }
-      return stampAccountQuotaFetchTime({
-        ...buildBaseAccountQuotaEntry(target, t, metaLabels),
-        windows: billing.officialApiHealth ? [] : buildXaiAccountQuotaWindows(billing, t),
-      });
-    }
-    case 'codex':
-    default: {
-      const quota = await fetchCodexQuota(target.file, t);
-      const planLabel = getCodexPlanLabel(quota.planType ?? target.planType, t);
-      return stampAccountQuotaFetchTime({
-        ...buildBaseAccountQuotaEntry(
-          {
-            ...target,
-            planType: quota.planType ?? target.planType,
-          },
-          t,
-          planLabel ? [`${t('codex_quota.plan_label')}: ${planLabel}`] : []
-        ),
-        planType: quota.planType ?? target.planType,
-        windows: buildCodexAccountQuotaWindows(quota.windows, t),
-      });
-    }
-  }
-};
-
 export const buildRealtimeLogRows = (rows: MonitoringEventRow[]): RealtimeLogRow[] => {
   const sortedAsc = [...rows].sort(
     (left, right) => left.timestampMs - right.timestampMs || left.id.localeCompare(right.id)

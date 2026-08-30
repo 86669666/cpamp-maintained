@@ -1,0 +1,14 @@
+🚀 <b>CPA Manager Plus v1.12.6 Maintained 1</b>
+
+✨ <b>更新内容</b>
+
+• 同步上游 v1.12.6，并保留插件门禁、Bun-only 发布链、Management Key 只写边界与保存密钥代理 IP 隔离。
+• 快照恢复新增崩溃事务 journal，覆盖 SQLite sidecar 与 <code>data.key</code>，启动时可确定性恢复。
+• Codex legacy identity 缺失或冲突时 fail closed；启动历史检测改为有界查询。
+• Plan 筛选按 provider 隔离，quota lifecycle 严格限制当前 generation。
+• <code>usage_events</code> 继续作为权威事件账本；派生重建不删除事件，兼容迁移可能更新规范化或响应元数据字段。
+
+🔒 <b>发布边界</b>
+
+• 相同 tag 已存在 Release 时流程直接失败，绝不覆盖资产。
+• 账号自动操作、自动禁用和 quota cooldown 继续保持关闭。
