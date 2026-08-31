@@ -192,6 +192,58 @@ describe('QuotaWindowCard', () => {
     }
   });
 
+  it('does not present a provisional current candidate as a confirmed range', () => {
+    const currentStartMs = Date.parse('2026-08-28T17:42:00Z');
+    const currentEndMs = Date.parse('2026-08-28T22:42:00Z');
+    const previousStartMs = Date.parse('2026-08-28T07:23:00Z');
+    const previousEndMs = Date.parse('2026-08-28T12:23:00Z');
+    const window = makeWindow({
+      boundaryAccuracy: 'unknown',
+      cycleStartMs: currentStartMs,
+      cycleEndMs: currentEndMs,
+      usage: null,
+      currentUsage: null,
+      previousUsage: usage({ fromMs: previousStartMs, toMs: previousEndMs }),
+      forecast: null,
+      currentCycle: {
+        id: 2,
+        activationId: 1,
+        state: 'provisional',
+        scheduledStartMs: currentStartMs,
+        scheduledEndMs: currentEndMs,
+        actualStartMs: currentStartMs,
+        actualEndMs: null,
+        durationSeconds: 5 * 60 * 60,
+        boundaryAccuracy: 'unknown',
+        endReason: '',
+        parentCycleId: null,
+        forecastEligible: false,
+      },
+      previousCycle: {
+        id: 1,
+        activationId: 1,
+        state: 'closed',
+        scheduledStartMs: previousStartMs,
+        scheduledEndMs: previousEndMs,
+        actualStartMs: previousStartMs,
+        actualEndMs: previousEndMs,
+        durationSeconds: 5 * 60 * 60,
+        boundaryAccuracy: 'exact',
+        endReason: 'scheduled',
+        parentCycleId: null,
+        forecastEligible: false,
+      },
+    });
+
+    const renderer = renderCard(window);
+    const current = renderer.root.findByProps({ 'data-quota-usage-period': 'current' });
+    const previous = renderer.root.findByProps({ 'data-quota-usage-period': 'previous' });
+
+    expect(readText(current)).toContain('accounts.detail_current_window_boundary_unconfirmed');
+    expect(readText(current)).not.toContain(formatDisplayRange(currentStartMs, currentEndMs));
+    expect(readText(previous)).toContain(formatDisplayRange(previousStartMs, previousEndMs));
+  });
+
   it('shows scheduled previous-cycle bounds while retaining actual usage bounds', () => {
     const scheduledStartMs = Date.parse('2026-08-09T00:28:00Z');
     const scheduledEndMs = Date.parse('2026-08-16T00:28:00Z');

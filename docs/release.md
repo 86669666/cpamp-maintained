@@ -37,12 +37,22 @@ release/<version> -> dev -> main -> v<version> tag -> GitHub Release
    (not squash or rebase).
 3. Record the resulting `dev` commit from that release PR as the release SHA.
    Before promotion, confirm that `dev` still points to that exact SHA.
-4. Open a same-repository `dev -> main` promotion PR. It must pass the normal
-   PR checks and the `Verify dev promotion source` gate before merging with a
-   merge commit. Squash and rebase merges are rejected by release preflight.
-5. Reconfirm that the resulting `main` commit contains the recorded release
+4. Before opening the promotion PR, derive its `Related` section from the exact
+   range between the previous `main` tip and the frozen release `dev` SHA.
+   Inspect first-parent integration merges and resolve each one to its GitHub
+   PR using merge-commit and PR metadata. List every distinct PR merged into
+   `dev` in that range, including the release PR and feature, fix, docs, or
+   chore PRs; exclude branch-synchronization merges and work already present in
+   the previous `main` tip. Preserve integration order and stop if any merge
+   cannot be mapped to a PR. Write one `Refs #<number>` line per PR, using
+   `N/A` only when the range contains no qualifying PRs.
+5. Open a same-repository `dev -> main` promotion PR with the full repository
+   template and the complete `Related` list. It must pass the normal PR checks
+   and the `Verify dev promotion source` gate before merging with a merge
+   commit. Squash and rebase merges are rejected by release preflight.
+6. Reconfirm that the resulting `main` commit contains the recorded release
    `dev` SHA, then run the release workflow dry-run from that `main` commit.
-6. Create the tag from the exact `main` commit that passed the dry-run.
+7. Create the tag from the exact `main` commit that passed the dry-run.
 
 Do not open a release PR directly to `main`: branch protection permits only
 the repository's `dev` branch to promote into `main`.
@@ -53,6 +63,29 @@ of the current `dev` ref. This is normal. Before a new release, require that
 does. The release scope is still invalid if `dev` advances after the release PR
 is merged: refresh the notes and repeat the release preflight rather than
 including unreviewed changes in the tag.
+
+## Operator Approval Gates
+
+Normal releases use two explicit gates rather than one confirmation per remote
+operation:
+
+1. **Integrate and validate**: approve the exact release branch and files,
+   conditional Release PR merge, the single conditional `dev -> main` merge,
+   temporary clean-worktree lifecycle, dry-run dispatch, and any disclosed
+   scoped fallback. Both merges proceed only while their recorded head/base
+   SHAs remain unchanged and all required checks pass.
+2. **Tag and publish**: after the dry-run succeeds, approve the exact
+   `refs/tags/<tag> -> <main-promotion-sha>` mapping. The tag-triggered run and
+   read-only closeout then continue without further confirmation.
+
+The operator keeps an in-session manifest containing the previous `main` SHA,
+source `dev` SHA, the exact promotion range and `Related` PR numbers, release
+content digests, Release PR head and merge SHAs, promotion SHA, dry-run ID, tag
+target, and allowed fallback operations. Any SHA drift, failed check, scope
+change, incomplete PR mapping, or new side effect invalidates the current gate
+and stops the flow. A dirty developer checkout is recorded and preserved;
+remote operations and a detached temporary worktree are used instead of
+requiring unrelated local changes to be stashed or cleaned.
 
 ## Release Note Files
 

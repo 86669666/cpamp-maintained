@@ -21,8 +21,8 @@ describe('maintained lightweight variant', () => {
     expect(manifest).toEqual({
       upstream: {
         repository: 'https://github.com/seakee/CPA-Manager-Plus.git',
-        tag: 'v1.12.6',
-        commit: 'c428c212b8d4f2db5c3a8c288e9fe3cbb5f6c650',
+        tag: 'v1.12.7',
+        commit: 'be3039b66917a13e91b51660ecc10c08dca4862a',
       },
       revision: 3,
       variant: 'lightweight-plugin-lockdown-local-tools',

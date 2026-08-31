@@ -2251,7 +2251,7 @@ describe('accountRows', () => {
     const cooldownKey = byName.get('cooldown.json')?.selectionKey ?? '';
     const disabledKey = byName.get('disabled.json')?.selectionKey ?? '';
 
-    const metrics = buildAccountMetrics(rows, {
+    const operationalContext = {
       pendingActionsByRowKey: new Map([
         [attentionKey, [{ id: 1 }]],
         [disabledKey, [{ id: 2 }]],
@@ -2260,7 +2260,8 @@ describe('accountRows', () => {
         [cooldownKey, [{ id: 3 }]],
         [disabledKey, [{ id: 4 }]],
       ]),
-    });
+    };
+    const metrics = buildAccountMetrics(rows, operationalContext);
 
     expect(metrics).toEqual({
       total: 6,
@@ -2278,6 +2279,16 @@ describe('accountRows', () => {
         metrics.disabled +
         metrics.unconfirmed
     ).toBe(metrics.total);
+    expect(
+      filterAccountRows(rows, {
+        provider: 'all',
+        status: 'unconfirmed',
+        plan: 'all',
+        quotaBand: 'all',
+        search: '',
+        ...operationalContext,
+      }).map((row) => row.selectionKey)
+    ).toEqual([byName.get('unconfirmed.json')?.selectionKey]);
   });
 
   it('filters rows by quota band and search text', () => {

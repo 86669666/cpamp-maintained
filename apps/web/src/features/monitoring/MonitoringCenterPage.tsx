@@ -884,7 +884,11 @@ export function MonitoringCenterPage() {
   );
   const accountStatusNowMs = monitoringLastRefreshedAt?.getTime() ?? Date.now();
   const accountStatusBounds = useMemo(
-    () => getRangeBounds(timeRange, accountStatusNowMs, customTimeRange),
+    () => {
+      const bounds = getRangeBounds(timeRange, accountStatusNowMs, customTimeRange);
+      if (!bounds || timeRange !== 'yesterday') return bounds;
+      return { ...bounds, endMs: bounds.endMs - 1 };
+    },
     [accountStatusNowMs, customTimeRange, timeRange]
   );
   const accountOverviewScopeText = useMemo(

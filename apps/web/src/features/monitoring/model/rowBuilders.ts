@@ -62,7 +62,11 @@ export const buildRangeFilteredRows = (
   if (!bounds) return [];
 
   return rows.filter((row) => {
-    if (row.timestampMs < bounds.startMs || row.timestampMs > bounds.endMs) {
+    const outsideEnd =
+      timeRange === 'yesterday'
+        ? row.timestampMs >= bounds.endMs
+        : row.timestampMs > bounds.endMs;
+    if (row.timestampMs < bounds.startMs || outsideEnd) {
       return false;
     }
 

@@ -85,6 +85,7 @@ export const ACCOUNT_CODEX_STATUS_FILTERS = [
 export const ACCOUNT_STATUS_FILTERS = [
   'all',
   'available',
+  'unconfirmed',
   'disabled',
   'problem',
   'low',
@@ -220,14 +221,13 @@ export interface AccountMetricOperationalContext {
   requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey;
 }
 
-export interface AccountRowFilters {
+export interface AccountRowFilters extends AccountMetricOperationalContext {
   provider: string;
   status: AccountStatusFilter;
   plan: string;
   quotaBand: AccountQuotaBand;
   search: string;
   codexStatusBySelectionKey?: ReadonlyMap<string, AuthFileCodexStatusSummary>;
-  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey;
 }
 
 export interface AccountPlanOption {
@@ -677,7 +677,7 @@ export const filterAccountRows = (rows: AccountRow[], filters: AccountRowFilters
         row,
         filters.status,
         filters.codexStatusBySelectionKey,
-        filters.requestEvidenceBySelectionKey
+        filters
       )
     ) {
       return false;
@@ -824,7 +824,7 @@ const matchesStatusFilter = (
   row: AccountRow,
   status: AccountStatusFilter,
   codexStatusBySelectionKey?: ReadonlyMap<string, AuthFileCodexStatusSummary>,
-  requestEvidenceBySelectionKey?: AccountRequestEvidenceBySelectionKey
+  context: AccountMetricOperationalContext = {}
 ) => {
   if (status === 'all') return true;
   if (isAccountCodexStatusFilter(status)) {
@@ -832,15 +832,22 @@ const matchesStatusFilter = (
     if (!codexStatus || !authFileMatchesCodexStatusFilter(codexStatus, status)) return false;
     if (status !== 'reauth') return true;
     return (
-      getRowRequestCredentialEvidence(row, requestEvidenceBySelectionKey)?.direction !== 'positive'
+      getRowRequestCredentialEvidence(row, context.requestEvidenceBySelectionKey)?.direction !==
+      'positive'
     );
   }
   if (status === 'available') {
-    return isAccountRowAvailable(row, requestEvidenceBySelectionKey);
+    return isAccountRowAvailable(row, context.requestEvidenceBySelectionKey);
   }
   if (status === 'disabled') return row.disabled;
+  if (status === 'unconfirmed') {
+    return classifyAccountMetricStatus(row, context) === 'unconfirmed';
+  }
   if (status === 'problem') {
-    const requestEvidenceInput = getRowRequestEvidenceInput(row, requestEvidenceBySelectionKey);
+    const requestEvidenceInput = getRowRequestEvidenceInput(
+      row,
+      context.requestEvidenceBySelectionKey
+    );
     const requestEvidence = resolveAccountRequestHealthEvidence(requestEvidenceInput);
     const currentRequestEvidence = isAccountRequestHealthEvidenceCurrent(row, requestEvidence)
       ? requestEvidence
@@ -858,7 +865,7 @@ const matchesStatusFilter = (
   if (status === 'inspection') {
     return isAccountInspectionActionable(
       row,
-      getRowRequestHealthEvidence(row, requestEvidenceBySelectionKey)
+      getRowRequestHealthEvidence(row, context.requestEvidenceBySelectionKey)
     );
   }
   return true;

@@ -645,6 +645,20 @@ describe('accountDetailViewModel', () => {
           cycleEndMs: nowMs + 23 * 60 * 60 * 1000,
           modelScope,
           availability: 'active',
+          currentCycle: {
+            id: 2,
+            activationId: 1,
+            state: 'active',
+            scheduledStartMs: nowMs - 60 * 60 * 1000,
+            scheduledEndMs: nowMs + 23 * 60 * 60 * 1000,
+            actualStartMs: nowMs - 60 * 60 * 1000,
+            actualEndMs: null,
+            durationSeconds: 24 * 60 * 60,
+            boundaryAccuracy: 'exact',
+            endReason: '',
+            parentCycleId: null,
+            forecastEligible: true,
+          },
           previousCycle: {
             id: 1,
             activationId: 1,
@@ -676,7 +690,7 @@ describe('accountDetailViewModel', () => {
     });
   });
 
-  it('does not use dynamic quota progress when the current cycle is not forecast eligible', () => {
+  it('does not forecast from the previous cycle when the current cycle is not forecast eligible', () => {
     const row = makeRow({ provider: 'codex' });
     const nowMs = Date.now();
     const currentKey = accountWindowUsageRequestKey(row.selectionKey, 'weekly', 'current');
@@ -755,12 +769,79 @@ describe('accountDetailViewModel', () => {
       windowUsageByKey,
     });
 
-    expect(viewModel.quota.windows[0].forecast).toEqual({
-      basis: 'previous',
-      requests: 20,
-      tokens: 200_000,
-      cost: 2,
+    expect(viewModel.quota.windows[0].forecast).toBeNull();
+  });
+
+  it('does not forecast a stale lifecycle current window from previous usage', () => {
+    const row = makeRow({ provider: 'codex' });
+    const nowMs = Date.now();
+    const previousKey = accountWindowUsageRequestKey(row.selectionKey, 'weekly', 'previous');
+    const windowUsageByKey = new Map<string, MonitoringAccountWindowUsageItem>([
+      [
+        previousKey,
+        makeWindowUsage({
+          window_key: 'weekly',
+          total_requests: 20,
+          total_tokens: 200_000,
+          total_cost: 2,
+        }),
+      ],
+    ]);
+
+    const viewModel = buildAccountDetailViewModel(row, {
+      quotaWindows: [
+        {
+          key: 'weekly',
+          providerWindowId: 'weekly',
+          label: 'Weekly',
+          kind: 'weekly',
+          remainingPercent: 99,
+          usedPercent: 1,
+          resetLabel: 'later',
+          resetAtMs: nowMs + 7 * 24 * 60 * 60 * 1000,
+          resetAccuracy: 'exact',
+          observedAtMs: nowMs,
+          limitWindowSeconds: 7 * 24 * 60 * 60,
+          windowMode: 'fixed',
+          cycleStartMs: nowMs - 60 * 60 * 1000,
+          cycleEndMs: nowMs + 23 * 60 * 60 * 1000,
+          modelScope: { kind: 'all', complete: true },
+          availability: 'active',
+          stale: true,
+          currentCycle: {
+            id: 2,
+            activationId: 1,
+            state: 'active',
+            scheduledStartMs: nowMs - 60 * 60 * 1000,
+            scheduledEndMs: nowMs + 23 * 60 * 60 * 1000,
+            actualStartMs: nowMs - 60 * 60 * 1000,
+            actualEndMs: null,
+            durationSeconds: 7 * 24 * 60 * 60,
+            boundaryAccuracy: 'exact',
+            endReason: '',
+            parentCycleId: null,
+            forecastEligible: true,
+          },
+          previousCycle: {
+            id: 1,
+            activationId: 1,
+            state: 'closed',
+            scheduledStartMs: nowMs - 8 * 24 * 60 * 60 * 1000,
+            scheduledEndMs: nowMs - 7 * 24 * 60 * 60 * 1000,
+            actualStartMs: nowMs - 8 * 24 * 60 * 60 * 1000,
+            actualEndMs: nowMs - 7 * 24 * 60 * 60 * 1000,
+            durationSeconds: 7 * 24 * 60 * 60,
+            boundaryAccuracy: 'exact',
+            endReason: 'scheduled',
+            parentCycleId: null,
+            forecastEligible: true,
+          },
+        },
+      ],
+      windowUsageByKey,
     });
+
+    expect(viewModel.quota.windows[0].forecast).toBeNull();
   });
 
   it('does not use stale quota progress without matched previous usage', () => {

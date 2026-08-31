@@ -44,11 +44,7 @@ import {
   type AccountRecommendationPriority,
 } from './quotaRecommendations';
 import type { UsageValueRow, UsageValueSource } from './usageValueRows';
-import {
-  getPlanPresentation,
-  resolveAuthFilePlanType,
-  type PlanPresentation,
-} from '@/utils/plans';
+import { getPlanPresentation, resolveAuthFilePlanType, type PlanPresentation } from '@/utils/plans';
 import {
   classifyAccountCredentialStatusEvidence,
   getAccountRequestCredentialEvidence,
@@ -677,6 +673,8 @@ const buildQuotaWindows = (
     const currentForecastEligible = window.currentCycle
       ? window.currentCycle.forecastEligible
       : !hasLifecycleEvidence;
+    const canForecastCurrentWindow =
+      !hasLifecycleEvidence || (currentForecastEligible && window.stale !== true);
     const quotaObservedAtMs =
       typeof window.observedAtMs === 'number' &&
       Number.isFinite(window.observedAtMs) &&
@@ -699,6 +697,7 @@ const buildQuotaWindows = (
     const forecast =
       scopeAllowsUsage &&
       lifecycleActive &&
+      canForecastCurrentWindow &&
       (window.windowMode === 'fixed' || window.windowMode === 'calendar') &&
       typeof window.cycleStartMs === 'number' &&
       typeof window.cycleEndMs === 'number'
@@ -1607,8 +1606,7 @@ export const buildAccountDetailViewModel = (
       planType: row.planType,
       planPresentation: getPlanPresentation({
         provider: row.provider,
-        planType:
-          options.codexQuota?.planType ?? row.planType ?? resolveAuthFilePlanType(row.raw),
+        planType: options.codexQuota?.planType ?? row.planType ?? resolveAuthFilePlanType(row.raw),
         t: options.t,
       }),
       authIndex: row.authIndex,

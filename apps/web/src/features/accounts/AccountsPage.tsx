@@ -3729,12 +3729,16 @@ export function AccountsPage() {
         quotaBand: quotaBandFilter,
         search,
         codexStatusBySelectionKey,
+        pendingActionsByRowKey: actionCandidatesByRowKey,
+        quotaCooldownsByRowKey,
         requestEvidenceBySelectionKey,
       }),
     [
+      actionCandidatesByRowKey,
       codexStatusBySelectionKey,
       planFilterValue,
       providerFilter,
+      quotaCooldownsByRowKey,
       quotaBandFilter,
       requestEvidenceBySelectionKey,
       rows,
@@ -5947,7 +5951,9 @@ export function AccountsPage() {
       ? t('accounts.status_all')
       : isAccountCodexStatusFilter(statusFilter)
         ? t(`auth_files.codex_status_filter_${statusFilter}`)
-        : t(`accounts.status_${statusFilter}`);
+        : statusFilter === 'unconfirmed'
+          ? t('accounts.metric_unconfirmed')
+          : t(`accounts.status_${statusFilter}`);
   const selectedPlanFilterLabel =
     planFilter === 'all' ? t('accounts.plan_all') : getPlanOptionLabel(rows, planFilter, t);
   const selectedQuotaFilterLabel =
@@ -6213,6 +6219,7 @@ export function AccountsPage() {
           options={[
             { value: 'all', label: t('accounts.status_all') },
             { value: 'available', label: t('accounts.status_available') },
+            { value: 'unconfirmed', label: t('accounts.metric_unconfirmed') },
             { value: 'low', label: t('accounts.status_low') },
             { value: 'exhausted', label: t('accounts.status_exhausted') },
             { value: 'disabled', label: t('accounts.status_disabled') },

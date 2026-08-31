@@ -256,6 +256,84 @@ describe('accountWindowUsageRows', () => {
     expect(entries[0].requestKey).not.toBe(entries[1].requestKey);
   });
 
+  it('keeps the previous target when the current lifecycle boundary is provisional', () => {
+    const row = makeRow({});
+    const definition: AccountQuotaWindowDefinition = {
+      key: '5h',
+      providerWindowId: '5h',
+      provider: 'codex',
+      label: '5h',
+      kind: 'five_hour',
+      windowMode: 'fixed',
+      modelScope: { kind: 'all', complete: true },
+      observationSource: 'api_query',
+      observedAtMs: 30_000,
+      boundaryAccuracy: 'unknown',
+      cycleStartMs: 20_000,
+      cycleEndMs: 38_000,
+      durationSeconds: 18,
+      remainingPercent: 100,
+      usedPercent: 0,
+      stale: false,
+      display: {
+        key: '5h',
+        label: '5h',
+        kind: 'five_hour',
+        remainingPercent: 100,
+        usedPercent: 0,
+        resetLabel: 'reset',
+        resetAccuracy: 'unknown',
+        limitWindowSeconds: 18,
+        resetAtMs: 38_000,
+        fromMs: 20_000,
+        toMs: 38_000,
+      },
+      currentCycle: {
+        id: 2,
+        activationId: 1,
+        state: 'provisional',
+        scheduledStartMs: 20_000,
+        scheduledEndMs: 38_000,
+        actualStartMs: 20_000,
+        actualEndMs: null,
+        durationSeconds: 18,
+        boundaryAccuracy: 'unknown',
+        endReason: '',
+        parentCycleId: null,
+        forecastEligible: false,
+      },
+      previousCycle: {
+        id: 1,
+        activationId: 1,
+        state: 'closed',
+        scheduledStartMs: 2_000,
+        scheduledEndMs: 20_000,
+        actualStartMs: 8_000,
+        actualEndMs: 20_000,
+        durationSeconds: 18,
+        boundaryAccuracy: 'exact',
+        endReason: 'scheduled',
+        parentCycleId: null,
+        forecastEligible: false,
+      },
+    };
+
+    const entries = buildAccountWindowUsageTargetEntries(
+      [row],
+      new Map([[row.selectionKey, [definition]]]),
+      30_000
+    );
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      period: 'previous',
+      target: {
+        from_ms: 8_000,
+        to_ms: 20_000,
+      },
+    });
+  });
+
   it('uses unique window keys instead of provider order for legacy scoped responses', () => {
     const row = makeRow({});
     const alphaScope = { kind: 'models' as const, models: ['model-alpha'] };

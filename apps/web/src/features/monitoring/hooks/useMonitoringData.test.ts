@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildAccountRows,
   buildApiKeyRows,
@@ -640,6 +640,29 @@ describe('buildRangeFilteredRows', () => {
     expect(
       buildRangeFilteredRows(rows, 'all', null, 'unmatched raw key', 'hash-a').map((row) => row.id)
     ).toEqual(['hash-a']);
+  });
+
+  it('treats yesterday as a half-open local-day interval', () => {
+    const nowMs = new Date(2026, 7, 28, 15, 30, 0, 0).getTime();
+    const yesterdayStartMs = new Date(2026, 7, 27, 0, 0, 0, 0).getTime();
+    const todayStartMs = new Date(2026, 7, 28, 0, 0, 0, 0).getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+
+    try {
+      const rows = [
+        createMonitoringEventRow({ id: 'before-yesterday', timestampMs: yesterdayStartMs - 1 }),
+        createMonitoringEventRow({ id: 'yesterday-start', timestampMs: yesterdayStartMs }),
+        createMonitoringEventRow({ id: 'yesterday-end', timestampMs: todayStartMs - 1 }),
+        createMonitoringEventRow({ id: 'today-start', timestampMs: todayStartMs }),
+      ];
+
+      expect(
+        buildRangeFilteredRows(rows, 'yesterday', null, '').map((row) => row.id)
+      ).toEqual(['yesterday-start', 'yesterday-end']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -3369,6 +3369,22 @@ describe('AccountsPage replacement flows', () => {
     ).toHaveLength(0);
   });
 
+  it('offers the unconfirmed status filter with the metric label', async () => {
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const statusSelect = renderer.root
+      .findAllByType(Select)
+      .find((node) => node.props.ariaLabel === 'accounts.status_filter');
+    if (!statusSelect) throw new Error('Accounts status filter not found');
+
+    expect(statusSelect.props.options).toEqual(
+      expect.arrayContaining([
+        { value: 'unconfirmed', label: 'accounts.metric_unconfirmed' },
+      ])
+    );
+  });
+
   it('loads request evidence for every account before applying the problem filter', async () => {
     mocks.files = Array.from({ length: 201 }, (_, index) =>
       makeCodexFile(

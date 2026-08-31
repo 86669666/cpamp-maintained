@@ -84,11 +84,29 @@ const formatRange = (
   return `${formatter.format(fromMs)} — ${formatter.format(toMs)}`;
 };
 
+const isReliableBoundary = (accuracy: AccountQuotaBoundaryAccuracy | null | undefined) =>
+  accuracy === 'exact' || accuracy === 'derived';
+
 const formatCurrentWindowRange = (
   window: AccountDetailQuotaWindow,
   usage: AccountDetailWindowUsageSummary | null | undefined,
-  locale: string
+  locale: string,
+  unconfirmedLabel: string
 ): string => {
+  const hasLifecycleEvidence =
+    window.availability !== undefined ||
+    window.currentCycle !== undefined ||
+    window.previousCycle !== undefined;
+  if (
+    (window.windowMode === 'fixed' || window.windowMode === 'calendar') &&
+    hasLifecycleEvidence &&
+    (!window.currentCycle ||
+      window.currentCycle.state === 'provisional' ||
+      !isReliableBoundary(window.currentCycle.boundaryAccuracy))
+  ) {
+    return unconfirmedLabel;
+  }
+
   const cycleStartMs = window.cycleStartMs;
   const cycleEndMs = window.cycleEndMs;
   if (
@@ -131,9 +149,6 @@ const formatObservedAt = (value: number, locale: string): string =>
     hour: '2-digit',
     minute: '2-digit',
   }).format(value);
-
-const isReliableBoundary = (accuracy: AccountQuotaBoundaryAccuracy | null | undefined) =>
-  accuracy === 'exact' || accuracy === 'derived';
 
 const isIntervalWindow = (window: AccountDetailQuotaWindow): boolean =>
   window.windowMode === 'fixed' ||
@@ -401,6 +416,10 @@ export const QuotaWindowCard = ({
   const forecastEmptyMessage = t('accounts.detail_forecast_unavailable', {
     defaultValue: '暂无可用预测依据，暂不预测',
   });
+  const currentWindowBoundaryUnconfirmed = t(
+    'accounts.detail_current_window_boundary_unconfirmed',
+    { defaultValue: '周期边界尚未确认' }
+  );
   const hasUsageScopeWarning = (item: AccountDetailWindowUsageSummary | null | undefined) =>
     item?.scopeMatchStatus === 'partial' || item?.scopeMatchStatus === 'unmatched';
   const hasScopeWarning =
@@ -658,7 +677,12 @@ export const QuotaWindowCard = ({
             />
             <UsageColumn
               title={t('accounts.detail_current_used', { defaultValue: '当前窗口已用' })}
-              subtitle={formatCurrentWindowRange(q, usage, resolvedLocale)}
+              subtitle={formatCurrentWindowRange(
+                q,
+                usage,
+                resolvedLocale,
+                currentWindowBoundaryUnconfirmed
+              )}
               period="current"
               usage={usage}
               labels={usageLabels}
@@ -713,7 +737,12 @@ export const QuotaWindowCard = ({
         />
         <UsageColumn
           title={t('accounts.detail_current_used', { defaultValue: '当前窗口已用' })}
-          subtitle={formatCurrentWindowRange(q, usage, resolvedLocale)}
+          subtitle={formatCurrentWindowRange(
+            q,
+            usage,
+            resolvedLocale,
+            currentWindowBoundaryUnconfirmed
+          )}
           period="current"
           usage={usage}
           labels={usageLabels}
