@@ -7,6 +7,7 @@ import {
   hasAccountCredentialMutationEvidence,
   listAccountCredentialMutationMarkers,
   recordAccountCredentialMutationMarker,
+  resolveAccountCredentialMutationFiles,
 } from './accountCredentialMutationMarker';
 
 const createMemoryStorage = (): Storage => {
@@ -109,6 +110,7 @@ describe('account credential mutation markers', () => {
     });
     expect(marker).not.toBeNull();
     expect(hasAccountCredentialMutationEvidence(marker!, existing)).toBe(false);
+    expect(resolveAccountCredentialMutationFiles(marker!, existing)).toEqual([]);
     expect(
       hasAccountCredentialMutationEvidence(marker!, [
         { ...existing[0], status_message: 'token_expired' },
@@ -125,6 +127,61 @@ describe('account credential mutation markers', () => {
       modified: 2_000,
     } as AuthFileItem;
     expect(hasAccountCredentialMutationEvidence(marker!, [...existing, created])).toBe(true);
+    expect(resolveAccountCredentialMutationFiles(marker!, [...existing, created])).toEqual([
+      created,
+    ]);
+  });
+
+  it('resolves new credentials by stable identity instead of file name', () => {
+    const baselineFiles = [
+      {
+        id: 'runtime-a',
+        name: 'shared.json',
+        provider: 'codex',
+        authIndex: 'auth-a',
+        account_id: 'account-a',
+      },
+      {
+        id: 'runtime-b',
+        name: 'codex-b.json',
+        provider: 'codex',
+        authIndex: 'auth-b',
+        account_id: 'account-b',
+      },
+    ] as AuthFileItem[];
+    const baseline = createAccountCredentialMutationBaseline(baselineFiles, 'codex');
+    const marker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'connection-a',
+      provider: 'codex',
+      baseline,
+      requireObservedMutation: true,
+      createdAtMs: Date.now(),
+    });
+    const currentFiles = [
+      ...baselineFiles,
+      {
+        id: 'runtime-c',
+        name: 'shared.json',
+        provider: 'codex',
+        authIndex: 'auth-c',
+        account_id: 'account-c',
+      },
+    ] as AuthFileItem[];
+
+    expect(resolveAccountCredentialMutationFiles(marker!, currentFiles)).toEqual([currentFiles[2]]);
+    expect(hasAccountCredentialMutationEvidence(marker!, currentFiles)).toBe(true);
+    expect(
+      resolveAccountCredentialMutationFiles(marker!, [
+        ...baselineFiles,
+        {
+          id: 'runtime-claude',
+          name: 'claude.json',
+          provider: 'claude',
+          authIndex: 'auth-claude',
+          account_id: 'account-claude',
+        } as AuthFileItem,
+      ])
+    ).toEqual([]);
   });
 
   it('fails closed when an OAuth marker has no captured baseline', () => {

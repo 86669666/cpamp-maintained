@@ -102,35 +102,36 @@ export const getProviderLabel = (provider: string, t: TFunction) => {
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 };
 
-export const formatPercent = (value: number | null, digits = 0) =>
-  value === null ? '-' : `${value.toFixed(digits)}%`;
+export const formatPercent = (value: number | null | undefined, digits = 0) =>
+  typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(digits)}%` : '-';
 
 export const formatMoney = (value: number) => formatUsd(value);
 
-export const formatCompactNumber = (value: number) => {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return String(value);
+export const formatHistoryNumber = (value: number, locale: string) => {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return '-';
+  return new Intl.NumberFormat(locale || undefined).format(numberValue);
 };
 
-export const formatHistorySuccessRate = (value: number | null | undefined) =>
-  typeof value === 'number' && Number.isFinite(value) ? formatPercent(value * 100, 1) : '-';
+export const formatHistorySuccessRate = (value: number | null | undefined, digits = 1) =>
+  typeof value === 'number' && Number.isFinite(value) ? formatPercent(value * 100, digits) : '-';
 
 export const getAccountHistoryTitle = (
   t: TFunction,
   item: MonitoringAccountHistoryItem | null,
   loading: boolean,
-  error: string
+  error: string,
+  locale = 'en-US'
 ) => {
   if (error) return t('accounts.history_unavailable');
   if (loading && !item) return t('accounts.history_loading');
   if (!item || !item.matched) return t('accounts.history_empty');
   if (item.sync_status === 'pending') return t('accounts.history_pending_title');
   return t('accounts.history_title', {
-    requests: formatCompactNumber(item.total_requests),
-    tokens: formatCompactNumber(item.total_tokens),
+    requests: formatHistoryNumber(item.total_requests, locale),
+    tokens: formatHistoryNumber(item.total_tokens, locale),
     cost: formatMoney(item.total_cost),
-    rate: formatHistorySuccessRate(item.success_rate),
+    rate: formatHistorySuccessRate(item.success_rate, 2),
   });
 };
 

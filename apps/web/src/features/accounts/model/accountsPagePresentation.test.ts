@@ -1,7 +1,8 @@
+import type { TFunction } from 'i18next';
 import { describe, expect, it } from 'vitest';
+import type { MonitoringAccountHistoryItem } from '@/services/api';
 import {
   buildAntigravityQuotaMatrix,
-  formatCompactNumber,
   formatHistorySuccessRate,
   formatMoney,
   formatQuotaResetDisplay,
@@ -9,6 +10,7 @@ import {
   formatQuotaResetTooltipParams,
   formatTimestamp,
   formatTimestampTitle,
+  getAccountHistoryTitle,
   parsePriorityValue,
   quotaStatusLabelKey,
 } from './accountsPagePresentation';
@@ -19,11 +21,31 @@ describe('accountsPagePresentation', () => {
   it('keeps account sort and metric formatting semantics stable', () => {
     expect(parsePriorityValue(' -12 ')).toBe(-12);
     expect(parsePriorityValue('1.2')).toBeNull();
-    expect(formatCompactNumber(999)).toBe('999');
-    expect(formatCompactNumber(12_500)).toBe('12.5K');
     expect(formatHistorySuccessRate(0.975)).toBe('97.5%');
     expect(formatMoney(12.34)).toBe('$12.34');
     expect(quotaStatusLabelKey('exhausted')).toBe('accounts.quota_status_exhausted');
+  });
+
+  it('uses exact values in the account history summary title', () => {
+    const item = {
+      matched: true,
+      total_requests: 1_234_567,
+      total_tokens: 1_000_190_000,
+      total_cost: 12_345.67,
+      success_rate: 0.98321,
+      sync_status: 'ready',
+    } as MonitoringAccountHistoryItem;
+    const t = ((key: string, options?: Record<string, unknown>) =>
+      `${key}:${options?.requests ?? ''}:${options?.tokens ?? ''}:${options?.cost ?? ''}:${options?.rate ?? ''}`) as TFunction;
+
+    const title = getAccountHistoryTitle(t, item, false, '', 'en-US');
+
+    expect(title).toContain('1,234,567');
+    expect(title).toContain('1,000,190,000');
+    expect(title).toContain('$12,345.67');
+    expect(title).toContain('98.32%');
+    expect(title).not.toContain('1.2M');
+    expect(title).not.toContain('1000.2M');
   });
 
   it('formats detail timestamps with optional seconds using a numeric local format', () => {

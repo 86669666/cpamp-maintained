@@ -140,6 +140,24 @@ describe('QuotaWindowCard', () => {
     expect(renderer.root.findAllByProps({ 'data-quota-model-comparison': 'true' })).toHaveLength(0);
   });
 
+  it('keeps a fixed billing interval in standard mode when mode is inferred', () => {
+    const renderer = renderCard(
+      makeWindow({
+        kind: 'billing',
+        windowMode: 'fixed',
+        limitWindowSeconds: 30 * 24 * 60 * 60,
+        cycleStartMs: 1_000,
+        cycleEndMs: 30 * 24 * 60 * 60 * 1_000,
+      })
+    );
+
+    expect(renderer.root.findAllByProps({ 'data-quota-card-mode': 'standard' })).toHaveLength(1);
+    expect(renderer.root.findAllByProps({ 'data-quota-standard-comparison': 'true' })).toHaveLength(
+      1
+    );
+    expect(renderer.root.findAllByProps({ 'data-quota-card-mode': 'other' })).toHaveLength(0);
+  });
+
   it('uses semantic colors for the current usage metric icons', () => {
     const renderer = renderCard(makeWindow());
     const current = renderer.root.findByProps({ 'data-quota-usage-period': 'current' });
@@ -169,6 +187,20 @@ describe('QuotaWindowCard', () => {
       expect.stringContaining('rowIconTeal'),
       expect.stringContaining('rowIconAmber'),
     ]);
+  });
+
+  it('uses the shared compact formatter for large token counts', () => {
+    const renderer = renderCard(
+      makeWindow({
+        currentUsage: usage({ totalTokens: 1_000_190_000 }),
+      })
+    );
+    const currentText = readText(
+      renderer.root.findByProps({ 'data-quota-usage-period': 'current' })
+    );
+
+    expect(currentText).toContain('1.0B');
+    expect(currentText).not.toContain('1000.2M');
   });
 
   it('uses complete fixed-cycle boundaries instead of the current data cutoff', () => {

@@ -36,6 +36,7 @@ import type { AuthFilesCredentialMutation } from '@/features/authFiles/hooks/use
 import { clearAccountCredentialEvidenceBoundaryStateCache } from './model/accountCredentialEvidenceStorage';
 import {
   clearAccountCredentialMutationMarkersForTests,
+  createAccountCredentialMutationBaseline,
   listAccountCredentialMutationMarkers,
   recordAccountCredentialMutationMarker,
 } from './model/accountCredentialMutationMarker';
@@ -60,6 +61,7 @@ import {
   listPendingAccountDirectReauths,
 } from './model/accountDirectReauth';
 import { useUsageHeaderSnapshotStore } from '@/stores/useUsageHeaderSnapshotStore';
+import { publishAccountCredentialMutationRevision } from '@/stores';
 import { AccountsPage } from './AccountsPage';
 
 type AnalyticsRequestForTest = {
@@ -214,6 +216,20 @@ const makeCodexQuotaData = (
   rateLimitResetCreditsAvailableCount: resetCreditsAvailableCount,
   rateLimitResetCredits: credits,
   rateLimitResetCreditsError: null,
+});
+
+const makeCodexQuotaWindow = (
+  overrides: Partial<CodexQuotaState['windows'][number]> = {}
+): CodexQuotaState['windows'][number] => ({
+  id: 'five-hour',
+  label: 'Five hours',
+  usedPercent: 20,
+  resetLabel: 'later',
+  resetAtMs: Date.now() + 6 * 60 * 60 * 1000,
+  resetAccuracy: 'exact',
+  limitWindowSeconds: 5 * 60 * 60,
+  modelScope: CODEX_MAIN_SCOPE,
+  ...overrides,
 });
 
 const buildCredentialScopedQuotaRecord = <TState extends object>(
@@ -483,6 +499,10 @@ const { mocks } = vi.hoisted(() => {
         if (typeof options.name === 'string') parts.push(options.name);
         if (typeof options.count === 'number') parts.push(String(options.count));
         if (typeof options.message === 'string') parts.push(options.message);
+        if (typeof options.requests === 'string') parts.push(options.requests);
+        if (typeof options.tokens === 'string') parts.push(options.tokens);
+        if (typeof options.cost === 'string') parts.push(options.cost);
+        if (typeof options.rate === 'string') parts.push(options.rate);
         return parts.length > 0 ? `${key}:${parts.join(':')}` : key;
       },
     },
@@ -973,6 +993,18 @@ const findAccountCardButtonByAriaLabel = (
   return button;
 };
 
+const findAccountDetailRegion = (
+  renderer: ReactTestRenderer,
+  selectionKey: string,
+  kind: 'history' | 'quota'
+) => {
+  const region = findAccountCardByKey(renderer, selectionKey).findAll(
+    (node) => node.props['data-account-detail-region'] === kind
+  )[0];
+  if (!region) throw new Error(`Account detail region not found: ${kind}`);
+  return region;
+};
+
 const findAccountCardInputByAriaLabel = (
   renderer: ReactTestRenderer,
   selectionKey: string,
@@ -1165,6 +1197,7 @@ describe('AccountsPage replacement flows', () => {
     mocks.navigate.mockClear();
     mocks.showNotification.mockClear();
     mocks.showConfirmation.mockClear();
+    vi.mocked(publishAccountCredentialMutationRevision).mockClear();
     mocks.toggleSelect.mockClear();
     mocks.selectAllVisible.mockClear();
     mocks.invertVisibleSelection.mockClear();
@@ -2442,7 +2475,9 @@ describe('AccountsPage replacement flows', () => {
     expect(mocks.loadModelAlias).not.toHaveBeenCalled();
     expect(mocks.getAnalytics).not.toHaveBeenCalled();
     expect(mocks.getAccountWindowUsage).not.toHaveBeenCalled();
-    expect(getAccountListItemTexts(renderer)[0]).toContain('20%');
+    expect(getAccountListItemTexts(renderer)[0]).toContain('accounts.quota_details_only');
+    expect(getAccountListItemTexts(renderer)[0]).not.toContain('accounts.quota_source_none');
+    expect(getAccountListItemTexts(renderer)[0]).not.toContain('20%');
     expect(mocks.quotaState.setCodexQuota).not.toHaveBeenCalled();
   });
 
@@ -3379,9 +3414,7 @@ describe('AccountsPage replacement flows', () => {
     if (!statusSelect) throw new Error('Accounts status filter not found');
 
     expect(statusSelect.props.options).toEqual(
-      expect.arrayContaining([
-        { value: 'unconfirmed', label: 'accounts.metric_unconfirmed' },
-      ])
+      expect.arrayContaining([{ value: 'unconfirmed', label: 'accounts.metric_unconfirmed' }])
     );
   });
 
@@ -6910,7 +6943,7 @@ describe('AccountsPage replacement flows', () => {
     expect(getAccountListItemTexts(renderer)[0]).toContain('high.json');
   });
 
-  it('renders xAI monthly and pay-as-you-go quota windows on account cards', async () => {
+  it('keeps xAI billing and pay-as-you-go windows in quota details only', async () => {
     mocks.files = [
       {
         name: 'xai.json',
@@ -6937,13 +6970,84 @@ describe('AccountsPage replacement flows', () => {
     });
 
     const renderer = await renderAccountsPage();
-    const text = treeText(renderer);
+    const selectionKey = getAuthFileSelectionKey(mocks.files[0]);
+    const card = findAccountCardByKey(renderer, selectionKey);
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+    const text = readText(card);
 
-    expect(text).toContain('30D');
-    expect(text).toContain('PAYG');
+    expect(text).toContain('accounts.quota_details_only');
+    expect(text).not.toContain('accounts.quota_source_none');
+    expect(text).not.toContain('30D');
+    expect(text).not.toContain('PAYG');
+    expect(quotaRegion.props['aria-label']).toContain('accounts.quota_details_only');
+
+    await act(async () => {
+      quotaRegion.props.onClick();
+    });
+
+    const otherQuotaGroup = renderer.root.findByProps({ 'data-quota-window-group': 'other' });
+    expect(readText(otherQuotaGroup)).toContain('xai_quota.monthly_credits');
+    expect(readText(otherQuotaGroup)).toContain('xai_quota.pay_as_you_go_label');
+    expect(renderer.root.findAllByProps({ 'data-quota-window-group': 'standard' })).toHaveLength(0);
   });
 
-  it('renders Antigravity Pro model groups as a two-row quota matrix', async () => {
+  it('keeps a fixed xAI billing period in detail standard mode while hiding it from the list', async () => {
+    const file = {
+      name: 'xai-fixed-billing.json',
+      type: 'xai',
+      provider: 'xai',
+      authIndex: 'xai-fixed-billing-1',
+      account: 'xai-fixed-billing@example.com',
+      priority: 0,
+      disabled: false,
+    } as AuthFileItem;
+    mocks.files = [file];
+    mocks.quotaState.xaiQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      billing: {
+        periodType: 'monthly',
+        usagePercent: 20,
+        periodStart: '2026-08-01T00:00:00Z',
+        periodEnd: '2026-09-01T00:00:00Z',
+        productUsage: [{ product: 'Grok Code Fast', usagePercent: 20 }],
+        monthlyLimitCents: 10_000,
+        usedCents: 2_000,
+        includedUsedCents: 2_000,
+        onDemandCapCents: null,
+        onDemandUsedCents: null,
+        onDemandUsedPercent: null,
+        billingPeriodStart: '2026-08-01T00:00:00Z',
+        billingPeriodEnd: '2026-09-01T00:00:00Z',
+        usedPercent: 20,
+      },
+    });
+
+    const renderer = await renderAccountsPage();
+    const selectionKey = getAuthFileSelectionKey(file);
+    const card = findAccountCardByKey(renderer, selectionKey);
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+    const cardText = readText(card);
+    expect(cardText).toContain('accounts.quota_details_only');
+    expect(cardText).not.toContain('accounts.quota_source_none');
+    expect(cardText).not.toContain('30D');
+    expect(cardText).not.toContain('Grok Code Fast');
+    expect(quotaRegion.props['aria-label']).toContain('accounts.quota_details_only');
+
+    await act(async () => {
+      findAccountDetailRegion(renderer, selectionKey, 'quota').props.onClick();
+    });
+    await flushPromises();
+
+    const standardGroup = renderer.root.findByProps({ 'data-quota-window-group': 'standard' });
+    const otherGroup = renderer.root.findByProps({ 'data-quota-window-group': 'other' });
+    expect(standardGroup.findAllByType(QuotaWindowCard)).toHaveLength(1);
+    expect(standardGroup.findByProps({ 'data-quota-card-mode': 'standard' })).toBeTruthy();
+    expect(standardGroup.findByProps({ 'data-quota-standard-comparison': 'true' })).toBeTruthy();
+    expect(readText(otherGroup)).toContain('xai_quota.monthly_credits');
+    expect(readText(otherGroup)).toContain('Grok Code Fast');
+  });
+
+  it('keeps Antigravity Pro model groups out of the list and in quota details', async () => {
     mocks.files = [
       {
         name: 'antigravity-pro-matrix.json',
@@ -7011,33 +7115,27 @@ describe('AccountsPage replacement flows', () => {
     const matrices = renderer.root.findAll(
       (node) => typeof node.props['data-account-quota-matrix'] === 'string'
     );
-    expect(matrices).toHaveLength(1);
-    const matrix = matrices[0];
-    const matrixRows = matrix.findAll(
-      (node) => typeof node.props['data-account-quota-matrix-row'] === 'string'
-    );
-    const matrixCells = matrix.findAll(
-      (node) => typeof node.props['data-account-quota-matrix-cell'] === 'string'
-    );
+    expect(matrices).toHaveLength(0);
+    expect(
+      readText(findAccountCardByKey(renderer, getAuthFileSelectionKey(mocks.files[0])))
+    ).toContain('accounts.quota_details_only');
 
-    expect(matrixRows.map((node) => node.props['data-account-quota-matrix-row'])).toEqual([
-      'five_hour',
-      'weekly',
-    ]);
-    expect(matrixCells).toHaveLength(4);
-    expect(readText(matrix)).toContain('5H');
-    expect(readText(matrix)).toContain('7D');
-    expect(readText(matrix)).toContain('Claude');
-    expect(readText(matrix)).toContain('Gemini');
-    expect(readText(matrix)).toContain('11%');
-    expect(readText(matrix)).toContain('96%');
-    expect(readText(matrix)).toContain('19%');
-    expect(readText(matrix)).toContain('4%');
-    expect(readText(matrix)).not.toContain('Claude/GPT');
-    expect(readText(matrix)).not.toContain('accounts.quota_more_windows');
+    await act(async () => {
+      findAccountDetailRegion(
+        renderer,
+        getAuthFileSelectionKey(mocks.files[0]),
+        'quota'
+      ).props.onClick();
+    });
+
+    const modelQuotaGroup = renderer.root.findByProps({ 'data-quota-window-group': 'model' });
+    expect(modelQuotaGroup.findAllByType(QuotaWindowCard)).toHaveLength(4);
+    expect(readText(modelQuotaGroup)).toContain('antigravity_quota.group_claude_gpt_models');
+    expect(readText(modelQuotaGroup)).toContain('antigravity_quota.group_gemini_models');
+    expect(renderer.root.findAllByProps({ 'data-quota-window-group': 'standard' })).toHaveLength(0);
   });
 
-  it('renders Antigravity Free weekly groups as a single-row quota matrix', async () => {
+  it('keeps Antigravity Free model groups out of the list and in quota details', async () => {
     mocks.files = [
       {
         name: 'antigravity-free-weekly.json',
@@ -7091,27 +7189,24 @@ describe('AccountsPage replacement flows', () => {
     const matrices = renderer.root.findAll(
       (node) => typeof node.props['data-account-quota-matrix'] === 'string'
     );
-    expect(matrices).toHaveLength(1);
-    const matrix = matrices[0];
-    const matrixRows = matrix.findAll(
-      (node) => typeof node.props['data-account-quota-matrix-row'] === 'string'
-    );
-    const matrixCells = matrix.findAll(
-      (node) => typeof node.props['data-account-quota-matrix-cell'] === 'string'
-    );
+    expect(matrices).toHaveLength(0);
+    expect(
+      readText(findAccountCardByKey(renderer, getAuthFileSelectionKey(mocks.files[0])))
+    ).toContain('accounts.quota_details_only');
 
-    expect(matrixRows.map((node) => node.props['data-account-quota-matrix-row'])).toEqual([
-      'weekly',
-    ]);
-    expect(matrixCells).toHaveLength(2);
-    expect(readText(matrix)).toContain('7D');
-    expect(readText(matrix)).toContain('Claude');
-    expect(readText(matrix)).toContain('Gemini');
-    expect(readText(matrix)).toContain('31%');
-    expect(readText(matrix)).toContain('76%');
-    expect(readText(matrix)).not.toContain('5H');
-    expect(readText(matrix)).not.toContain('Claude/GPT');
-    expect(readText(matrix)).not.toContain('accounts.quota_more_windows');
+    await act(async () => {
+      findAccountDetailRegion(
+        renderer,
+        getAuthFileSelectionKey(mocks.files[0]),
+        'quota'
+      ).props.onClick();
+    });
+
+    const modelQuotaGroup = renderer.root.findByProps({ 'data-quota-window-group': 'model' });
+    expect(modelQuotaGroup.findAllByType(QuotaWindowCard)).toHaveLength(2);
+    expect(readText(modelQuotaGroup)).toContain('antigravity_quota.group_claude_gpt_models');
+    expect(readText(modelQuotaGroup)).toContain('antigravity_quota.group_gemini_models');
+    expect(renderer.root.findAllByProps({ 'data-quota-window-group': 'standard' })).toHaveLength(0);
   });
 
   it('keeps the accounts view in card mode without table controls', async () => {
@@ -7161,7 +7256,325 @@ describe('AccountsPage replacement flows', () => {
     ]);
 
     expect(renderer.root.findAllByProps({ 'data-account-quota-empty': 'true' })).toHaveLength(1);
+    expect(treeText(renderer)).toContain('accounts.quota_source_none');
+    expect(treeText(renderer)).not.toContain('accounts.quota_details_only');
     expect(treeText(renderer)).not.toContain('SUM');
+  });
+
+  it('opens the quota detail from the full historical usage region', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.panelFeatureAvailability = {
+      checking: false,
+      managerServiceBase: 'http://manager.local:18317',
+      requestMonitoringAvailable: true,
+      serverCodexInspectionAvailable: false,
+    };
+    mocks.getAccountHistory.mockResolvedValue(
+      makeAccountHistoryResponse([
+        {
+          row_key: selectionKey,
+          account_key: 'codex@example.com',
+          matched: true,
+          total_requests: 12,
+          success_calls: 10,
+          failure_calls: 2,
+          total_tokens: 1_200,
+          total_cost: 0.12,
+          success_rate: 10 / 12,
+          first_seen_ms: 1,
+          last_seen_ms: 2,
+          sync_status: 'ready',
+        },
+      ])
+    );
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+
+    const historyRegion = findAccountDetailRegion(renderer, selectionKey, 'history');
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+    expect(historyRegion.type).toBe('button');
+    expect(historyRegion.props['data-account-detail-trigger']).toBe('history');
+    const historyLabel = historyRegion.props['aria-label'] as string;
+    expect(historyLabel).toContain('accounts.list_header_historical_usage');
+    expect(historyLabel).toContain('accounts.history_title:12:1,200:$0.12:83.33%');
+    expect(historyLabel).toContain('accounts.open_detail:codex.json');
+    expect(historyLabel).toContain('accounts.detail_tab_quota');
+    expect(quotaRegion.props['aria-label']).not.toBe(historyRegion.props['aria-label']);
+    expect(historyRegion.findAllByType('div')).toHaveLength(0);
+    expect(readText(historyRegion)).toContain('12');
+
+    await act(async () => {
+      historyRegion.props.onClick();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findByType(AccountQuotaTab)).toBeTruthy();
+    expect(findHostButtonByText(renderer, 'accounts.detail_tab_quota').props['aria-selected']).toBe(
+      true
+    );
+    expect(mocks.navigate).toHaveBeenCalledWith(
+      {
+        pathname: '/accounts',
+        search: `?account=${encodeURIComponent(selectionKey)}&tab=quota`,
+      },
+      { replace: true }
+    );
+  });
+
+  it('opens the quota detail from the full quota information region', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      windows: [
+        makeCodexQuotaWindow({
+          resetAtMs: Date.now() + 5 * 60 * 60 * 1000 - 60_000,
+        }),
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+    const historyRegion = findAccountDetailRegion(renderer, selectionKey, 'history');
+
+    expect(quotaRegion.type).toBe('button');
+    expect(quotaRegion.props['data-account-detail-trigger']).toBe('quota');
+    const quotaLabel = quotaRegion.props['aria-label'] as string;
+    expect(quotaLabel).toContain('accounts.list_header_quota');
+    expect(quotaLabel).toContain('Five hours');
+    expect(quotaLabel).toContain('80%');
+    expect(quotaLabel).toContain('accounts.open_detail:codex.json');
+    expect(quotaLabel).toContain('accounts.detail_tab_quota');
+    expect(quotaLabel).not.toBe(historyRegion.props['aria-label']);
+    expect(quotaRegion.findAllByType('div')).toHaveLength(0);
+    expect(readText(quotaRegion)).toContain('5H');
+
+    await act(async () => {
+      quotaRegion.props.onClick();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findByType(AccountQuotaTab)).toBeTruthy();
+    expect(findHostButtonByText(renderer, 'accounts.detail_tab_quota').props['aria-selected']).toBe(
+      true
+    );
+    expect(mocks.navigate).toHaveBeenCalledWith(
+      {
+        pathname: '/accounts',
+        search: `?account=${encodeURIComponent(selectionKey)}&tab=quota`,
+      },
+      { replace: true }
+    );
+  });
+
+  it('keeps an empty historical usage region openable', async () => {
+    const selectionKey = getAuthFileSelectionKey(mocks.files[0]);
+    const renderer = await renderAccountsPage();
+    const historyRegion = findAccountDetailRegion(renderer, selectionKey, 'history');
+
+    expect(readText(historyRegion)).toContain('-');
+    expect(historyRegion.props.disabled).not.toBe(true);
+    expect(historyRegion.props['aria-label']).toContain('accounts.history_empty');
+
+    await act(async () => {
+      historyRegion.props.onClick();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findByType(AccountQuotaTab)).toBeTruthy();
+  });
+
+  it('keeps a details-only quota region openable when only model quota exists', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      windows: [
+        makeCodexQuotaWindow({
+          id: 'spark-model',
+          label: 'Spark model quota',
+          resetAtMs: Date.now() + 5 * 60 * 60 * 1000 - 60_000,
+          modelScope: { kind: 'family', key: 'codex_spark', complete: true },
+        }),
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    const card = findAccountCardByKey(renderer, selectionKey);
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+
+    expect(readText(card)).toContain('accounts.quota_details_only');
+    expect(readText(card)).not.toContain('accounts.quota_source_none');
+    expect(readText(card)).not.toContain('Spark model quota');
+    expect(quotaRegion.props['aria-label']).toContain('accounts.quota_details_only');
+
+    await act(async () => {
+      quotaRegion.props.onClick();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(renderer.root.findAllByProps({ 'data-quota-window-group': 'standard' })).toHaveLength(0);
+    expect(renderer.root.findByProps({ 'data-quota-window-group': 'model' })).toBeTruthy();
+    expect(renderer.root.findByType(AccountQuotaTab)).toBeTruthy();
+  });
+
+  it('uses card selection instead of opening details for both shortcut regions in selection mode', async () => {
+    const selectionKey = getAuthFileSelectionKey(mocks.files[0]);
+    const renderer = await renderAccountsPage();
+
+    await act(async () => {
+      findHostButtonByText(renderer, 'accounts.selection_mode_enter').props.onClick();
+    });
+
+    const card = findAccountCardByKey(renderer, selectionKey);
+    const historyRegion = findAccountDetailRegion(renderer, selectionKey, 'history');
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+    expect(historyRegion.type).toBe('div');
+    expect(quotaRegion.type).toBe('div');
+    expect(historyRegion.props['data-account-detail-trigger']).toBeUndefined();
+    expect(quotaRegion.props['data-account-detail-trigger']).toBeUndefined();
+
+    await act(async () => {
+      card.props.onClick();
+      card.props.onClick();
+    });
+
+    expect(mocks.toggleSelect).toHaveBeenNthCalledWith(1, selectionKey);
+    expect(mocks.toggleSelect).toHaveBeenNthCalledWith(2, selectionKey);
+    expect(renderer.root.findAllByType(AccountQuotaTab)).toHaveLength(0);
+    expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps shortcut navigation behind the existing dirty configuration guard', async () => {
+    const selectionKey = getAuthFileSelectionKey(mocks.files[0]);
+    mocks.configurationDirty = true;
+    mocks.location = {
+      pathname: '/accounts',
+      search: `?account=${encodeURIComponent(selectionKey)}&tab=config`,
+    };
+    const renderer = await renderAccountsPage();
+    const quotaRegion = findAccountDetailRegion(renderer, selectionKey, 'quota');
+
+    await act(async () => {
+      quotaRegion.props.onClick();
+      await Promise.resolve();
+    });
+
+    expect(mocks.showConfirmation).toHaveBeenCalledTimes(1);
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(
+      findHostButtonByText(renderer, 'accounts.detail_tab_config').props['aria-selected']
+    ).toBe(true);
+
+    const firstConfirmation = mocks.showConfirmation.mock.calls[0]?.[0] as {
+      onCancel: () => void;
+    };
+    await act(async () => {
+      firstConfirmation.onCancel();
+      await Promise.resolve();
+    });
+    await flushPromises();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(renderer.root.findAllByType(AccountQuotaTab)).toHaveLength(0);
+
+    await act(async () => {
+      quotaRegion.props.onClick();
+      await Promise.resolve();
+    });
+    const secondConfirmation = mocks.showConfirmation.mock.calls[1]?.[0] as {
+      onConfirm: () => void;
+    };
+    await act(async () => {
+      secondConfirmation.onConfirm();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(mocks.configurationReset).toHaveBeenCalledTimes(1);
+    expect(renderer.root.findByType(AccountQuotaTab)).toBeTruthy();
+    expect(mocks.navigate).toHaveBeenCalledWith(
+      {
+        pathname: '/accounts',
+        search: `?account=${encodeURIComponent(selectionKey)}&tab=quota`,
+      },
+      { replace: true }
+    );
+  });
+
+  it('shows every standard window while keeping model and other quota in the detail tab', async () => {
+    const file = mocks.files[0];
+    const selectionKey = getAuthFileSelectionKey(file);
+    const nowMs = Date.now();
+    const standardWindow = (
+      id: string,
+      label: string,
+      limitWindowSeconds: number,
+      usedPercent: number
+    ) =>
+      makeCodexQuotaWindow({
+        id,
+        label,
+        limitWindowSeconds,
+        usedPercent,
+        resetAtMs: nowMs + limitWindowSeconds * 1000 - 60_000,
+        modelScope: CODEX_MAIN_SCOPE,
+      });
+    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(file, {
+      status: 'success',
+      windows: [
+        standardWindow('five-hour', 'Five hours', 5 * 60 * 60, 20),
+        standardWindow('weekly', 'Weekly', 7 * 24 * 60 * 60, 30),
+        standardWindow('monthly', 'Monthly', 30 * 24 * 60 * 60, 40),
+        makeCodexQuotaWindow({
+          id: 'spark-model',
+          label: 'Spark model quota',
+          resetAtMs: nowMs + 5 * 60 * 60 * 1000 - 60_000,
+          modelScope: { kind: 'family', key: 'codex_spark', complete: true },
+        }),
+        makeCodexQuotaWindow({
+          id: 'billing',
+          label: 'Billing credits',
+          usedPercent: 10,
+          resetLabel: '-',
+          resetAtMs: null,
+          limitWindowSeconds: null,
+          modelScope: { kind: 'all', complete: true },
+        }),
+      ],
+    });
+
+    const renderer = await renderAccountsPage();
+    const cardText = getAccountCardText(renderer, selectionKey);
+    expect(cardText).toContain('5H');
+    expect(cardText).toContain('7D');
+    expect(cardText).toContain('30D');
+    expect(cardText).not.toContain('Spark model quota');
+    expect(cardText).not.toContain('Billing credits');
+    expect(cardText).not.toMatch(/\+\d+/);
+
+    await act(async () => {
+      findAccountDetailRegion(renderer, selectionKey, 'quota').props.onClick();
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    const standardGroup = renderer.root.findByProps({ 'data-quota-window-group': 'standard' });
+    const modelGroup = renderer.root.findByProps({ 'data-quota-window-group': 'model' });
+    const otherGroup = renderer.root.findByProps({ 'data-quota-window-group': 'other' });
+    expect(standardGroup.findAllByType(QuotaWindowCard)).toHaveLength(3);
+    expect(modelGroup.findAllByType(QuotaWindowCard)).toHaveLength(1);
+    expect(otherGroup.findAllByType(QuotaWindowCard)).toHaveLength(1);
+    expect(readText(standardGroup)).toContain('Five hours');
+    expect(readText(standardGroup)).toContain('Weekly');
+    expect(readText(standardGroup)).toContain('Monthly');
+    expect(readText(modelGroup)).toContain('Spark model quota');
+    expect(readText(otherGroup)).toContain('Billing credits');
   });
 
   it('selects account cards by row click while selection mode is active', async () => {
@@ -9000,12 +9413,12 @@ describe('AccountsPage replacement flows', () => {
           row_key: 'healthy.json\u0000auth-1',
           account_key: 'healthy@example.com',
           matched: true,
-          total_requests: 1234,
-          success_calls: 1218,
-          failure_calls: 16,
-          total_tokens: 5678900,
-          total_cost: 12.34,
-          success_rate: 0.987,
+          total_requests: 1_234_567,
+          success_calls: 1_218_000,
+          failure_calls: 16_567,
+          total_tokens: 1_000_190_000,
+          total_cost: 12_345.67,
+          success_rate: 0.98321,
           first_seen_ms: 1,
           last_seen_ms: 2,
           sync_status: 'ready',
@@ -9038,10 +9451,29 @@ describe('AccountsPage replacement flows', () => {
     );
     const accountHistoryRequest = mocks.getAccountHistory.mock.calls[0]?.[2];
     expect(accountHistoryRequest).not.toHaveProperty('catch_up');
-    expect(cardText).toContain('1.2K');
-    expect(cardText).toContain('5.7M');
-    expect(cardText).toContain('$12.34');
-    expect(cardText).toContain('98.7%');
+    expect(cardText).toContain('1.2M');
+    expect(cardText).toContain('1.0B');
+    expect(cardText).toContain('$12.35K');
+    expect(cardText).toContain('98.3%');
+    expect(cardText).not.toContain('1000.2M');
+    expect(
+      renderer.root.findByProps({
+        title: 'accounts.history_title:1,234,567:1,000,190,000:$12,345.67:98.32%',
+      })
+    ).toBeTruthy();
+    const historyMetricAriaLabels = [
+      'accounts.history_requests: 1,234,567',
+      'accounts.history_tokens: 1,000,190,000',
+      'accounts.history_cost: $12,345.67',
+      'accounts.history_success: 98.32%',
+    ];
+    const historyMetrics = renderer.root.findAll((node) =>
+      historyMetricAriaLabels.includes(node.props['aria-label'])
+    );
+    expect(historyMetrics.map((metric) => metric.props['aria-label'])).toEqual(
+      historyMetricAriaLabels
+    );
+    historyMetrics.forEach((metric) => expect(metric.props).not.toHaveProperty('title'));
     expect(cardText).not.toContain('accounts.history_requests');
     expect(cardText).not.toContain('accounts.history_tokens');
     expect(cardText).not.toContain('accounts.history_cost');
@@ -9075,14 +9507,14 @@ describe('AccountsPage replacement flows', () => {
         (node) => node.type === 'strong' && typeof node.props['aria-describedby'] === 'string'
       )
       .map((node) => readText(node));
-    expect(compactSummaryValues).toEqual(expect.arrayContaining(['1.2K', '5.7M']));
+    expect(compactSummaryValues).toEqual(expect.arrayContaining(['1.2M', '1.0B']));
     const summaryTooltips = quotaSummary
       .findAll((node) => node.props.role === 'tooltip')
       .map((node) => readText(node));
     expect(summaryTooltips).toEqual(
       expect.arrayContaining([
-        'accounts.detail_total_requests1,234',
-        'accounts.detail_total_tokens5,678,900',
+        'accounts.detail_total_requests1,234,567',
+        'accounts.detail_total_tokens1,000,190,000',
       ])
     );
   });
@@ -12176,14 +12608,25 @@ describe('AccountsPage replacement flows', () => {
       search: `?account=${encodeURIComponent(oauthSelectionKey)}&tab=overview`,
     };
     installCodexQuotaStoreMutationMock();
-    const storeKey = getQuotaCredentialStoreKey(oauthFile);
-    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(oauthFile, {
-      status: 'error',
+    const existingStoreKey = getQuotaCredentialStoreKey(existingFile);
+    const existingQuota = {
+      status: 'success' as const,
       windows: [],
-      error: 'stale OAuth quota failure',
-      errorStatus: 429,
-      failedAtMs: markerAtMs - 1_000,
-    });
+      quotaInventoryObserved: true,
+      fetchedAtMs: markerAtMs - 2_000,
+      ...buildQuotaCredentialIdentity(existingFile),
+    };
+    const storeKey = getQuotaCredentialStoreKey(oauthFile);
+    mocks.quotaState.codexQuota = {
+      [existingStoreKey]: existingQuota,
+      ...buildCredentialScopedQuotaRecord(oauthFile, {
+        status: 'error',
+        windows: [],
+        error: 'stale OAuth quota failure',
+        errorStatus: 429,
+        failedAtMs: markerAtMs - 1_000,
+      }),
+    };
     mocks.loadFiles.mockImplementation(async () => {
       if (mocks.loadFiles.mock.calls.length === 1) return mocks.files;
       mocks.files = [existingFile, oauthFile];
@@ -12192,6 +12635,8 @@ describe('AccountsPage replacement flows', () => {
     recordAccountCredentialMutationMarker({
       connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
       provider: 'codex',
+      baseline: createAccountCredentialMutationBaseline([existingFile], 'codex'),
+      requireObservedMutation: true,
       createdAtMs: markerAtMs,
     });
 
@@ -12204,8 +12649,9 @@ describe('AccountsPage replacement flows', () => {
     await flushPromises();
 
     expect(mocks.loadFiles).toHaveBeenCalledTimes(2);
-    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(2);
+    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(1);
     expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([]);
+    expect(mocks.quotaState.codexQuota).toHaveProperty(existingStoreKey, existingQuota);
     expect(mocks.quotaState.codexQuota).not.toHaveProperty(storeKey);
     expect(getAccountCardText(renderer, oauthSelectionKey)).not.toContain('accounts.health_reauth');
   });
@@ -12226,14 +12672,27 @@ describe('AccountsPage replacement flows', () => {
       search: `?account=${encodeURIComponent(oauthSelectionKey)}&tab=overview`,
     };
     installCodexQuotaStoreMutationMock();
+    const existingStoreKey = getQuotaCredentialStoreKey(existingFile);
+    const existingQuota = {
+      status: 'success' as const,
+      windows: [],
+      quotaInventoryObserved: true,
+      fetchedAtMs: markerAtMs - 2_000,
+      ...buildQuotaCredentialIdentity(existingFile),
+    };
     const storeKey = getQuotaCredentialStoreKey(oauthFile);
-    mocks.quotaState.codexQuota = buildCredentialScopedQuotaRecord(oauthFile, {
-      status: 'error',
+    const oauthQuota = {
+      status: 'error' as const,
       windows: [],
       error: 'post OAuth quota failure',
       errorStatus: 429,
       failedAtMs: newerEvidenceAtMs,
-    });
+      ...buildQuotaCredentialIdentity(oauthFile),
+    };
+    mocks.quotaState.codexQuota = {
+      [existingStoreKey]: existingQuota,
+      [storeKey]: oauthQuota,
+    };
     mocks.loadFiles.mockImplementation(async () => {
       if (mocks.loadFiles.mock.calls.length === 1) return mocks.files;
       mocks.files = [existingFile, oauthFile];
@@ -12242,6 +12701,8 @@ describe('AccountsPage replacement flows', () => {
     recordAccountCredentialMutationMarker({
       connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
       provider: 'codex',
+      baseline: createAccountCredentialMutationBaseline([existingFile], 'codex'),
+      requireObservedMutation: true,
       createdAtMs: markerAtMs,
     });
 
@@ -12253,9 +12714,10 @@ describe('AccountsPage replacement flows', () => {
     });
     await flushPromises();
 
-    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(2);
+    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(1);
     expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([]);
-    expect(mocks.quotaState.codexQuota).toHaveProperty(storeKey);
+    expect(mocks.quotaState.codexQuota).toHaveProperty(existingStoreKey, existingQuota);
+    expect(mocks.quotaState.codexQuota).toHaveProperty(storeKey, oauthQuota);
     expect(getAccountCardText(renderer, oauthSelectionKey)).toContain('accounts.health_limited');
     await act(async () => {
       findDetailButtonByName(renderer, oauthFile.name).props.onClick();
@@ -12264,6 +12726,270 @@ describe('AccountsPage replacement flows', () => {
       renderer.root.findByType(AccountOverviewTab).props.detailView.overview.recentStatus
         .statusMessage
     ).toBe('post_oauth_failure');
+  });
+  it('preserves every existing same-provider quota when OAuth adds one credential', async () => {
+    const markerAtMs = Date.now();
+    const existingFiles = [
+      makeCodexFile('existing-a.json', 'auth-a', 'a@example.com'),
+      makeCodexFile('existing-b.json', 'auth-b', 'b@example.com'),
+      makeCodexFile('existing-c.json', 'auth-c', 'c@example.com'),
+    ];
+    const oauthFile = {
+      ...makeCodexFile('oauth-d.json', 'auth-d', 'd@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      updatedAtMs: markerAtMs - 1_000,
+    } as AuthFileItem;
+    mocks.files = existingFiles;
+    installCodexQuotaStoreMutationMock();
+    const existingQuotaByKey = Object.fromEntries(
+      existingFiles.map((file, index) => [
+        getQuotaCredentialStoreKey(file),
+        {
+          status: 'success' as const,
+          windows: [],
+          quotaInventoryObserved: true,
+          fetchedAtMs: markerAtMs - (index + 2) * 1_000,
+          ...buildQuotaCredentialIdentity(file),
+        },
+      ])
+    );
+    const oauthStoreKey = getQuotaCredentialStoreKey(oauthFile);
+    const oauthStaleQuota = {
+      status: 'error' as const,
+      windows: [],
+      error: 'stale OAuth quota failure',
+      errorStatus: 429,
+      failedAtMs: markerAtMs - 1_000,
+      ...buildQuotaCredentialIdentity(oauthFile),
+    };
+    mocks.quotaState.codexQuota = {
+      ...existingQuotaByKey,
+      [oauthStoreKey]: oauthStaleQuota,
+    };
+    mocks.loadFiles.mockImplementation(async () => {
+      if (mocks.loadFiles.mock.calls.length === 1) return mocks.files;
+      mocks.files = [...existingFiles, oauthFile];
+      return mocks.files;
+    });
+    const marker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      baseline: createAccountCredentialMutationBaseline(existingFiles, 'codex'),
+      requireObservedMutation: true,
+      createdAtMs: markerAtMs,
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(marker).not.toBeNull();
+    expect(mocks.quotaState.setCodexQuota).toHaveBeenCalledTimes(1);
+    existingFiles.forEach((file) => {
+      const key = getQuotaCredentialStoreKey(file);
+      expect(mocks.quotaState.codexQuota).toHaveProperty(key, existingQuotaByKey[key]);
+    });
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(oauthStoreKey);
+    expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([]);
+  });
+  it('keeps existing quota and the OAuth marker when credential reload fails', async () => {
+    const markerAtMs = Date.now();
+    const existingFile = makeCodexFile('existing.json', 'auth-existing', 'existing@example.com');
+    const existingStoreKey = getQuotaCredentialStoreKey(existingFile);
+    const existingQuota = {
+      status: 'success' as const,
+      windows: [],
+      quotaInventoryObserved: true,
+      fetchedAtMs: markerAtMs - 1_000,
+      ...buildQuotaCredentialIdentity(existingFile),
+    };
+    mocks.files = [existingFile];
+    installCodexQuotaStoreMutationMock();
+    mocks.quotaState.codexQuota = { [existingStoreKey]: existingQuota };
+    const marker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      baseline: createAccountCredentialMutationBaseline([existingFile], 'codex'),
+      requireObservedMutation: true,
+      createdAtMs: markerAtMs,
+    });
+    mocks.loadFiles
+      .mockImplementationOnce(async () => mocks.files)
+      .mockRejectedValueOnce(new Error('temporary auth-file list failure'))
+      .mockImplementation(async () => mocks.files);
+
+    await renderAccountsPage();
+    await flushPromises();
+
+    expect(marker).not.toBeNull();
+    expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([
+      marker,
+    ]);
+    expect(mocks.quotaState.setCodexQuota).not.toHaveBeenCalled();
+    expect(mocks.quotaState.codexQuota).toHaveProperty(existingStoreKey, existingQuota);
+  });
+  it('preserves post-first-OAuth quota when consuming multiple same-provider OAuth markers', async () => {
+    const now = Date.now();
+    const firstMarkerAtMs = now - 30_000;
+    const bQuotaAtMs = now - 20_000;
+    const secondMarkerAtMs = now - 10_000;
+    const existingFile = makeCodexFile('existing.json', 'auth-existing', 'existing@example.com');
+    const firstOauthFile = makeCodexFile('shared.json', 'auth-b', 'b@example.com');
+    const secondOauthFile = {
+      ...makeCodexFile('shared.json', 'auth-c', 'c@example.com'),
+      status: 'error',
+      statusMessage: 'token_expired',
+      updatedAtMs: secondMarkerAtMs - 100,
+    } as AuthFileItem;
+    const existingStoreKey = getQuotaCredentialStoreKey(existingFile);
+    const firstOauthStoreKey = getQuotaCredentialStoreKey(firstOauthFile);
+    const secondOauthStoreKey = getQuotaCredentialStoreKey(secondOauthFile);
+    const existingQuota = {
+      status: 'success' as const,
+      windows: [],
+      quotaInventoryObserved: true,
+      fetchedAtMs: firstMarkerAtMs - 1_000,
+      ...buildQuotaCredentialIdentity(existingFile),
+    };
+    const firstOauthQuota = {
+      status: 'success' as const,
+      windows: [],
+      quotaInventoryObserved: true,
+      fetchedAtMs: bQuotaAtMs,
+      ...buildQuotaCredentialIdentity(firstOauthFile),
+    };
+    const secondOauthStaleQuota = {
+      status: 'error' as const,
+      windows: [],
+      error: 'stale second OAuth quota failure',
+      errorStatus: 429,
+      failedAtMs: secondMarkerAtMs - 100,
+      ...buildQuotaCredentialIdentity(secondOauthFile),
+    };
+    const reloadedFiles = [existingFile, firstOauthFile, secondOauthFile];
+    mocks.files = [existingFile];
+    installCodexQuotaStoreMutationMock();
+    mocks.quotaState.codexQuota = {
+      [existingStoreKey]: existingQuota,
+      [firstOauthStoreKey]: firstOauthQuota,
+      [secondOauthStoreKey]: secondOauthStaleQuota,
+    };
+    const firstMarker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      baseline: createAccountCredentialMutationBaseline([existingFile], 'codex'),
+      requireObservedMutation: true,
+      createdAtMs: firstMarkerAtMs,
+    });
+    const secondMarker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      baseline: createAccountCredentialMutationBaseline(
+        [existingFile, firstOauthFile],
+        'codex'
+      ),
+      requireObservedMutation: true,
+      createdAtMs: secondMarkerAtMs,
+    });
+    mocks.loadFiles.mockImplementation(async () => {
+      if (mocks.loadFiles.mock.calls.length === 1) return mocks.files;
+      return reloadedFiles;
+    });
+
+    const renderer = await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      renderer.update(<AccountsPage />);
+      await Promise.resolve();
+    });
+    await flushPromises();
+
+    expect(firstMarker).not.toBeNull();
+    expect(secondMarker).not.toBeNull();
+    expect(mocks.quotaState.codexQuota).toHaveProperty(existingStoreKey, existingQuota);
+    expect(mocks.quotaState.codexQuota).toHaveProperty(firstOauthStoreKey, firstOauthQuota);
+    expect(mocks.quotaState.codexQuota).not.toHaveProperty(secondOauthStoreKey);
+    expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([]);
+    expect(publishAccountCredentialMutationRevision).toHaveBeenCalledTimes(1);
+    expect(publishAccountCredentialMutationRevision).toHaveBeenCalledWith({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      kind: 'oauth',
+    });
+  });
+  it('preserves confirmed OAuth quota when a newer marker remains unconfirmed after retry exhaustion', async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
+    const firstMarkerAtMs = now - 30_000;
+    const bQuotaAtMs = now - 20_000;
+    const secondMarkerAtMs = now - 10_000;
+    const existingFile = makeCodexFile('existing.json', 'auth-existing', 'existing@example.com');
+    const firstOauthFile = makeCodexFile('oauth-b.json', 'auth-b', 'b@example.com');
+    const existingStoreKey = getQuotaCredentialStoreKey(existingFile);
+    const firstOauthStoreKey = getQuotaCredentialStoreKey(firstOauthFile);
+    const existingQuota = {
+      status: 'success' as const,
+      windows: [],
+      quotaInventoryObserved: true,
+      fetchedAtMs: firstMarkerAtMs - 1_000,
+      ...buildQuotaCredentialIdentity(existingFile),
+    };
+    const firstOauthQuota = {
+      status: 'success' as const,
+      windows: [],
+      quotaInventoryObserved: true,
+      fetchedAtMs: bQuotaAtMs,
+      ...buildQuotaCredentialIdentity(firstOauthFile),
+    };
+    mocks.files = [existingFile];
+    installCodexQuotaStoreMutationMock();
+    mocks.quotaState.codexQuota = {
+      [existingStoreKey]: existingQuota,
+      [firstOauthStoreKey]: firstOauthQuota,
+    };
+    const firstMarker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      baseline: createAccountCredentialMutationBaseline([existingFile], 'codex'),
+      requireObservedMutation: true,
+      createdAtMs: firstMarkerAtMs,
+    });
+    const secondMarker = recordAccountCredentialMutationMarker({
+      connectionFingerprint: 'http://cpa-a.local:8317:manager-key',
+      provider: 'codex',
+      baseline: createAccountCredentialMutationBaseline(
+        [existingFile, firstOauthFile],
+        'codex'
+      ),
+      requireObservedMutation: true,
+      createdAtMs: secondMarkerAtMs,
+    });
+    mocks.loadFiles.mockImplementation(async () => {
+      if (mocks.loadFiles.mock.calls.length === 1) return mocks.files;
+      mocks.files = [existingFile, firstOauthFile];
+      return mocks.files;
+    });
+
+    await renderAccountsPage();
+    await flushPromises();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    await flushPromises();
+
+    expect(firstMarker).not.toBeNull();
+    expect(secondMarker).not.toBeNull();
+    expect(mocks.quotaState.codexQuota).toHaveProperty(existingStoreKey, existingQuota);
+    expect(mocks.quotaState.codexQuota).toHaveProperty(firstOauthStoreKey, firstOauthQuota);
+    expect(listAccountCredentialMutationMarkers('http://cpa-a.local:8317:manager-key')).toEqual([
+      secondMarker,
+    ]);
+    expect(publishAccountCredentialMutationRevision).toHaveBeenCalledTimes(1);
   });
   it('does not consume OAuth mutation markers from another CPA connection', async () => {
     recordAccountCredentialMutationMarker({

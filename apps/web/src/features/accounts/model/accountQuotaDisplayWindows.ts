@@ -17,7 +17,10 @@ import {
   parseQuotaResetLabelMs,
   resolveAbsoluteQuotaReset,
 } from '@/utils/quota/formatters';
-import { inferCodexQuotaScopeFromProviderWindowId } from '@/utils/quota/codexQuota';
+import {
+  inferCodexQuotaScopeFromProviderWindowId,
+  isCodexMainQuotaModelScope,
+} from '@/utils/quota/codexQuota';
 import type { AccountRow } from './accountRows';
 import type { AccountQuotaStores } from './accountQuotaSummary';
 
@@ -99,6 +102,31 @@ export const remainingPercentFromUsed = (value: number | null | undefined) =>
   typeof value === 'number' && Number.isFinite(value) ? clampDisplayPercent(100 - value) : null;
 
 export { parseQuotaResetLabelMs };
+
+export const isIntervalAccountQuotaWindow = (
+  window: Pick<AccountQuotaDisplayWindow, 'windowMode'>
+): boolean =>
+  window.windowMode === 'fixed' ||
+  window.windowMode === 'calendar' ||
+  window.windowMode === 'rolling';
+
+export const isModelScopedAccountQuotaWindow = (
+  window: Pick<AccountQuotaDisplayWindow, 'modelScope' | 'source'>
+): boolean =>
+  window.modelScope?.complete === false ||
+  (window.modelScope?.kind !== undefined &&
+    window.modelScope.kind !== 'all' &&
+    !(window.source === 'codex' && isCodexMainQuotaModelScope(window.modelScope)));
+
+export const isStandardAccountQuotaListWindow = (
+  window: Pick<AccountQuotaDisplayWindow, 'kind' | 'windowMode' | 'modelScope' | 'source'>
+): boolean =>
+  isIntervalAccountQuotaWindow(window) &&
+  !isModelScopedAccountQuotaWindow(window) &&
+  window.kind !== 'billing' &&
+  window.kind !== 'payg' &&
+  window.kind !== 'product' &&
+  window.kind !== 'summary';
 
 const normalizeText = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ');
 

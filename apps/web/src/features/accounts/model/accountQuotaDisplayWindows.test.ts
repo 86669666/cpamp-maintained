@@ -6,6 +6,9 @@ import {
   buildAccountQuotaDisplayWindow,
   buildAccountQuotaDisplayWindows,
   getQuotaWindowShortLabel,
+  isIntervalAccountQuotaWindow,
+  isModelScopedAccountQuotaWindow,
+  isStandardAccountQuotaListWindow,
   parseQuotaResetLabelMs,
   type TranslateQuotaWindowLabel,
 } from './accountQuotaDisplayWindows';
@@ -60,6 +63,85 @@ const buildRow = (file: AuthFileItem, stores: AccountQuotaStores = emptyStores()
 };
 
 describe('accountQuotaDisplayWindows', () => {
+  describe('quota window classification', () => {
+    it.each(['fixed', 'calendar', 'rolling'] as const)(
+      'classifies an account-wide %s window as standard quota',
+      (windowMode) => {
+        const window = {
+          windowMode,
+          source: 'claude' as const,
+          modelScope: { kind: 'all' as const, complete: true },
+        };
+
+        expect(isIntervalAccountQuotaWindow(window)).toBe(true);
+        expect(isModelScopedAccountQuotaWindow(window)).toBe(false);
+        expect(isStandardAccountQuotaListWindow(window)).toBe(true);
+      }
+    );
+
+    it.each([
+      { kind: 'models' as const, models: ['gemini-3-pro'], complete: true },
+      { kind: 'family' as const, key: 'gemini', complete: true },
+    ])('classifies an explicitly model-scoped fixed window as model quota', (modelScope) => {
+      const window = { windowMode: 'fixed' as const, source: 'antigravity' as const, modelScope };
+
+      expect(isIntervalAccountQuotaWindow(window)).toBe(true);
+      expect(isModelScopedAccountQuotaWindow(window)).toBe(true);
+      expect(isStandardAccountQuotaListWindow(window)).toBe(false);
+    });
+
+    it('keeps the complete Codex main family in standard quota', () => {
+      const window = {
+        windowMode: 'fixed' as const,
+        source: 'codex' as const,
+        modelScope: { kind: 'family' as const, key: 'codex_main', complete: true },
+      };
+
+      expect(isModelScopedAccountQuotaWindow(window)).toBe(false);
+      expect(isStandardAccountQuotaListWindow(window)).toBe(true);
+    });
+
+    it.each([
+      { kind: 'billing' as const, windowMode: 'non_window' as const },
+      { kind: 'payg' as const, windowMode: 'non_window' as const },
+      { kind: 'product' as const, windowMode: 'non_window' as const },
+      { kind: 'unknown' as const, windowMode: 'unknown' as const },
+    ])('does not classify a $kind $windowMode item as standard quota', ({ kind, windowMode }) => {
+      const window = {
+        kind,
+        windowMode,
+        source: 'xai' as const,
+        modelScope: { kind: 'all' as const, complete: true },
+      };
+
+      expect(isIntervalAccountQuotaWindow(window)).toBe(false);
+      expect(isStandardAccountQuotaListWindow(window)).toBe(false);
+    });
+
+    it('keeps a fixed billing interval out of the list while retaining interval semantics', () => {
+      const window = {
+        kind: 'billing' as const,
+        windowMode: 'fixed' as const,
+        source: 'xai' as const,
+        modelScope: { kind: 'all' as const, complete: true },
+      };
+
+      expect(isIntervalAccountQuotaWindow(window)).toBe(true);
+      expect(isStandardAccountQuotaListWindow(window)).toBe(false);
+    });
+
+    it('fails closed when a provider reports an incomplete account-wide scope', () => {
+      const window = {
+        windowMode: 'fixed' as const,
+        source: 'antigravity' as const,
+        modelScope: { kind: 'all' as const, complete: false },
+      };
+
+      expect(isModelScopedAccountQuotaWindow(window)).toBe(true);
+      expect(isStandardAccountQuotaListWindow(window)).toBe(false);
+    });
+  });
+
   it('rolls legacy yearless reset labels into the next calendar year', () => {
     const nowMs = new Date(2026, 11, 31, 23, 0, 0, 0).getTime();
 
@@ -387,6 +469,56 @@ describe('accountQuotaDisplayWindows', () => {
       source: 'xai',
     });
     expect(getQuotaWindowShortLabel(windows[1])).toBe('PAYG');
+  });
+
+  it('keeps a monthly xAI billing period as an interval while hiding it from the list', () => {
+    const periodStartMs = Date.parse('2026-08-01T00:00:00Z');
+    const periodEndMs = Date.parse('2026-09-01T00:00:00Z');
+    const stores = {
+      ...emptyStores(),
+      xaiQuota: {
+        'xai.json': {
+          status: 'success',
+          billing: {
+            periodType: 'monthly',
+            usagePercent: 20,
+            periodStart: '2026-08-01T00:00:00Z',
+            periodEnd: '2026-09-01T00:00:00Z',
+            productUsage: [{ product: 'Grok Code Fast', usagePercent: 20 }],
+            monthlyLimitCents: 10_000,
+            usedCents: 2_000,
+            includedUsedCents: 2_000,
+            onDemandCapCents: null,
+            onDemandUsedCents: null,
+            onDemandUsedPercent: null,
+            billingPeriodStart: '2026-08-01T00:00:00Z',
+            billingPeriodEnd: '2026-09-01T00:00:00Z',
+            usedPercent: 20,
+          },
+        },
+      },
+    } satisfies AccountQuotaStores;
+    const row = buildRow({ name: 'xai.json', type: 'xai' }, stores);
+
+    const windows = buildAccountQuotaDisplayWindows(row, {
+      stores,
+      translateQuotaWindowLabel,
+      t,
+      nowMs: Date.parse('2026-08-15T00:00:00Z'),
+    });
+    const periodWindow = windows.find((window) => window.key === 'credits-period');
+
+    expect(periodWindow).toMatchObject({
+      kind: 'billing',
+      windowMode: 'fixed',
+      cycleStartMs: periodStartMs,
+      cycleEndMs: periodEndMs,
+      modelScope: { kind: 'all', complete: true },
+    });
+    expect(periodWindow).toBeDefined();
+    expect(isIntervalAccountQuotaWindow(periodWindow!)).toBe(true);
+    expect(isModelScopedAccountQuotaWindow(periodWindow!)).toBe(false);
+    expect(isStandardAccountQuotaListWindow(periodWindow!)).toBe(false);
   });
 
   it('shows xAI weekly credits as a separate quota window', () => {
