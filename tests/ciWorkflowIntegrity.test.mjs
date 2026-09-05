@@ -106,7 +106,7 @@ describe('GitHub Actions workflow integrity', () => {
       'git fetch --force https://github.com/seakee/CPA-Manager-Plus.git'
     );
     expect(buildJob).toContain(
-      'test "$(git rev-list -n 1 v1.12.8)" = "7c4cbeadaa801613e98ea6874b902844f09e59c6"'
+      'test "$(git rev-list -n 1 v1.12.9)" = "58256f62dd305fe76220bdcf6a12ad90e7a89ebe"'
     );
     expect(buildJob).toContain('scripts/build-maintained-lightweight.sh');
     expect(workflow).toContain('prerelease="$(bun - "${release_tag}"');

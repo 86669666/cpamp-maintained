@@ -4,8 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-baseline_commit="7c4cbeadaa801613e98ea6874b902844f09e59c6"
-baseline_tag="v1.12.8"
+baseline_commit="58256f62dd305fe76220bdcf6a12ad90e7a89ebe"
+baseline_tag="v1.12.9"
 variant="lightweight-plugin-lockdown-local-tools"
 revision="3"
 output_dir="$repo_root/output-maintained"
@@ -111,8 +111,8 @@ metadata = {
     'revision': 3,
     'upstream': {
         'repository': 'https://github.com/seakee/CPA-Manager-Plus.git',
-        'tag': 'v1.12.8',
-        'commit': '7c4cbeadaa801613e98ea6874b902844f09e59c6',
+        'tag': 'v1.12.9',
+        'commit': '58256f62dd305fe76220bdcf6a12ad90e7a89ebe',
     },
     'sourceHead': os.environ['HEAD_COMMIT'],
     'sourceTag': os.environ.get('SOURCE_TAG') or None,
