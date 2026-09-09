@@ -140,7 +140,7 @@ describe('QuotaWindowCard', () => {
     expect(renderer.root.findAllByProps({ 'data-quota-model-comparison': 'true' })).toHaveLength(0);
   });
 
-  it('keeps a fixed billing interval in standard mode when mode is inferred', () => {
+  it('infers other mode for a fixed billing interval', () => {
     const renderer = renderCard(
       makeWindow({
         kind: 'billing',
@@ -151,11 +151,34 @@ describe('QuotaWindowCard', () => {
       })
     );
 
-    expect(renderer.root.findAllByProps({ 'data-quota-card-mode': 'standard' })).toHaveLength(1);
+    expect(renderer.root.findAllByProps({ 'data-quota-card-mode': 'other' })).toHaveLength(1);
     expect(renderer.root.findAllByProps({ 'data-quota-standard-comparison': 'true' })).toHaveLength(
-      1
+      0
     );
+  });
+
+  it('renders standard card with incomplete boundary notice for unknown boundary standard window', () => {
+    const renderer = renderCard(
+      makeWindow({
+        kind: 'weekly',
+        windowMode: 'unknown',
+        modelScope: { kind: 'all', complete: true },
+        limitWindowSeconds: null,
+        fromMs: null,
+        toMs: null,
+        cycleStartMs: null,
+        cycleEndMs: null,
+        usage: undefined,
+        currentUsage: undefined,
+        previousUsage: undefined,
+        forecast: undefined,
+      })
+    );
+
+    expect(renderer.root.findAllByProps({ 'data-quota-card-mode': 'standard' })).toHaveLength(1);
     expect(renderer.root.findAllByProps({ 'data-quota-card-mode': 'other' })).toHaveLength(0);
+    const cardText = readText(renderer.root);
+    expect(cardText).toContain('accounts.detail_window_boundary_incomplete');
   });
 
   it('uses semantic colors for the current usage metric icons', () => {
@@ -453,6 +476,34 @@ describe('QuotaWindowCard', () => {
     expect(renderer.root.findAllByProps({ 'data-quota-standard-comparison': 'true' })).toHaveLength(
       0
     );
+  });
+
+  it('shows an incomplete boundary for model quota without model statistics warning or comparisons', () => {
+    const renderer = renderCard(
+      makeWindow({
+        kind: 'weekly',
+        windowMode: 'unknown',
+        modelScope: { kind: 'models', models: ['gpt-5'], complete: true },
+        limitWindowSeconds: null,
+        fromMs: null,
+        toMs: null,
+        cycleStartMs: null,
+        cycleEndMs: null,
+        usage: usage(),
+        currentUsage: usage(),
+        previousUsage: usage({ fromMs: -604_799_000, toMs: 1_000 }),
+        forecast: { requests: 200, tokens: 2_000_000, cost: 200, basis: 'quota' },
+      }),
+      'model'
+    );
+
+    expect(renderer.root.findAllByProps({ 'data-quota-card-mode': 'model' })).toHaveLength(1);
+    expect(readText(renderer.root)).toContain('accounts.detail_window_boundary_incomplete');
+    expect(readText(renderer.root)).not.toContain('accounts.detail_model_window_stats_unavailable');
+    expect(readText(renderer.root)).not.toContain(
+      'accounts.detail_model_window_stats_unavailable_desc'
+    );
+    expect(renderer.root.findAllByProps({ 'data-quota-model-comparison': 'true' })).toHaveLength(0);
   });
 
   it('keeps model comparisons when only the previous window has actual usage', () => {

@@ -20,13 +20,13 @@ func (r *repository) LoadAccountWindowStats(ctx context.Context, windows []Accou
 		return nil, State{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	windows, err = usageevent.ResolveAccountWindowLegacyKeys(ctx, tx, windows)
-	if err != nil {
-		return nil, State{}, false, err
-	}
 	state, available, projectionComplete, err := projectionReadState(ctx, tx)
 	if err != nil || !available {
 		return nil, state, available, err
+	}
+	windows, err = usageevent.ResolveAccountWindowLegacyKeys(ctx, tx, windows)
+	if err != nil {
+		return nil, state, false, err
 	}
 	statsState, revision, dailyAvailable, err := statsReadState(ctx, tx)
 	if err != nil {

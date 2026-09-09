@@ -6,6 +6,7 @@ import {
   formatHistorySuccessRate,
   formatMoney,
   formatQuotaResetDisplay,
+  getQuotaResetRemainingDays,
   formatQuotaResetTimestamp,
   formatQuotaResetTooltipParams,
   formatTimestamp,
@@ -114,6 +115,15 @@ describe('accountsPagePresentation', () => {
     ).toEqual({ resetAt: '07/30 10:05', recoverAt: '07/31 11:15' });
   });
 
+  it('calculates reset-credit remaining days with an inclusive countdown boundary', () => {
+    const nowMs = new Date(2026, 8, 11, 6, 33).getTime();
+
+    expect(getQuotaResetRemainingDays(nowMs + 10 * 24 * 60 * 60 * 1000, nowMs)).toBe(10);
+    expect(getQuotaResetRemainingDays(nowMs + 10 * 24 * 60 * 60 * 1000 - 1, nowMs)).toBe(10);
+    expect(getQuotaResetRemainingDays(nowMs - 1, nowMs)).toBe(0);
+    expect(getQuotaResetRemainingDays(null, nowMs)).toBeNull();
+  });
+
   it('keeps standard quota windows as the only list selection when available', () => {
     const standardQuotaWindows = [
       makeQuotaWindow({ key: 'five-hour', kind: 'five_hour' }),
@@ -132,10 +142,92 @@ describe('accountsPagePresentation', () => {
     ).toBe(standardQuotaWindows);
   });
 
-  it('does not add a fallback for Codex model-only quota', () => {
-    const quotaWindows = [makeQuotaWindow({ key: 'codex-spark', kind: 'product' })];
+  it('selects Codex main quota with or without duration while excluding scoped quota', () => {
+    // Case D: full duration main 5H fixed + main 7D fixed -> [5H, 7D]
+    const main5hFixed = makeQuotaWindow({
+      key: 'five-hour',
+      kind: 'five_hour',
+      source: 'codex',
+      windowMode: 'fixed',
+      limitWindowSeconds: 18000,
+      modelScope: { kind: 'family', key: 'codex_main', complete: true },
+    });
+    const main7dFixed = makeQuotaWindow({
+      key: 'weekly',
+      kind: 'weekly',
+      source: 'codex',
+      windowMode: 'fixed',
+      limitWindowSeconds: 604800,
+      modelScope: { kind: 'family', key: 'codex_main', complete: true },
+    });
+    expect(
+      selectAccountQuotaListWindows(
+        makeAccountRow('codex'),
+        [main5hFixed, main7dFixed],
+        [main5hFixed, main7dFixed]
+      )
+    ).toEqual([main5hFixed, main7dFixed]);
 
-    expect(selectAccountQuotaListWindows(makeAccountRow('codex'), quotaWindows, [])).toEqual([]);
+    // Case E: Weekly duration missing (main 5H fixed + main Weekly unknown) -> [5H, 7D]
+    const mainWeeklyUnknown = makeQuotaWindow({
+      key: 'weekly',
+      kind: 'weekly',
+      source: 'codex',
+      windowMode: 'unknown',
+      limitWindowSeconds: null,
+      modelScope: { kind: 'family', key: 'codex_main', complete: true },
+    });
+    expect(
+      selectAccountQuotaListWindows(
+        makeAccountRow('codex'),
+        [main5hFixed, mainWeeklyUnknown],
+        [main5hFixed]
+      )
+    ).toEqual([main5hFixed, mainWeeklyUnknown]);
+
+    // Case F: both duration missing -> [5H, 7D]
+    const main5hUnknown = makeQuotaWindow({
+      key: 'five-hour',
+      kind: 'five_hour',
+      source: 'codex',
+      windowMode: 'unknown',
+      limitWindowSeconds: null,
+      modelScope: { kind: 'family', key: 'codex_main', complete: true },
+    });
+    expect(
+      selectAccountQuotaListWindows(
+        makeAccountRow('codex'),
+        [main5hUnknown, mainWeeklyUnknown],
+        []
+      )
+    ).toEqual([main5hUnknown, mainWeeklyUnknown]);
+
+    // Case G: scoped quota (Spark, additional, code-review, model-scoped) do not enter list
+    const spark = makeQuotaWindow({
+      key: 'spark',
+      kind: 'five_hour',
+      source: 'codex',
+      modelScope: { kind: 'models', models: ['gpt-5.3-codex-spark'], complete: true },
+    });
+    const codeReview = makeQuotaWindow({
+      key: 'code-review',
+      kind: 'weekly',
+      source: 'codex',
+      modelScope: { kind: 'feature', key: 'code_review', complete: false },
+    });
+    const additional = makeQuotaWindow({
+      key: 'additional-unknown',
+      kind: 'five_hour',
+      source: 'codex',
+      modelScope: { kind: 'feature', key: 'additional_unknown', complete: false },
+    });
+    expect(
+      selectAccountQuotaListWindows(
+        makeAccountRow('codex'),
+        [main5hFixed, spark, codeReview, additional],
+        [main5hFixed]
+      )
+    ).toEqual([main5hFixed]);
   });
 
   it('preserves Claude standard ordering and keeps non-standard-only quota in details', () => {
@@ -161,25 +253,30 @@ describe('accountsPagePresentation', () => {
     ).toEqual([]);
   });
 
-  it('keeps Kimi standard windows ahead of summary data and exposes summary-only data', () => {
-    const standardQuotaWindows = [makeQuotaWindow({ key: 'five-hour', kind: 'five_hour' })];
-    const quotaWindows = [
-      makeQuotaWindow({ key: 'summary', kind: 'summary' }),
-      ...standardQuotaWindows,
-    ];
+  it('selects Kimi top-level 5H and 7D in order, hides scoped quota, and exposes summary-only data', () => {
+    // Case A: 5H standard + top-level 7D -> [5H, 7D]
+    const fiveHour = makeQuotaWindow({ key: 'five-hour', kind: 'five_hour', source: 'kimi' });
+    const topLevelWeekly = makeQuotaWindow({ key: 'summary', kind: 'weekly', source: 'kimi' });
     expect(
-      selectAccountQuotaListWindows(makeAccountRow('kimi'), quotaWindows, standardQuotaWindows)
-    ).toBe(standardQuotaWindows);
+      selectAccountQuotaListWindows(makeAccountRow('kimi'), [topLevelWeekly, fiveHour], [fiveHour])
+    ).toEqual([fiveHour, topLevelWeekly]);
 
-    const summaryOnly = [makeQuotaWindow({ key: 'summary', kind: 'summary', source: 'kimi' })];
+    // Case B: only top-level Weekly -> [7D]
+    const summaryOnly = [makeQuotaWindow({ key: 'summary', kind: 'weekly', source: 'kimi' })];
     expect(selectAccountQuotaListWindows(makeAccountRow('kimi'), summaryOnly, [])).toEqual(
       summaryOnly
     );
 
-    const scopedSummary = [
-      makeQuotaWindow({ key: 'usage-0-summary', kind: 'summary', source: 'kimi' }),
-    ];
-    expect(selectAccountQuotaListWindows(makeAccountRow('kimi'), scopedSummary, [])).toEqual([]);
+    // Case C: top-level 5H, top-level 7D, usage-0 scoped 5H, usage-0 scoped Weekly -> [top-level 5H, top-level 7D]
+    const scoped5H = makeQuotaWindow({ key: 'usage-0-limit-0', kind: 'five_hour', source: 'kimi' });
+    const scopedWeekly = makeQuotaWindow({ key: 'usage-0-summary', kind: 'weekly', source: 'kimi' });
+    expect(
+      selectAccountQuotaListWindows(
+        makeAccountRow('kimi'),
+        [fiveHour, topLevelWeekly, scoped5H, scopedWeekly],
+        [fiveHour]
+      )
+    ).toEqual([fiveHour, topLevelWeekly]);
   });
 
   it('normalizes Antigravity fallback scope labels without labeling other providers', () => {

@@ -454,6 +454,13 @@ func TestMigrateClearsDerivedUsageWhenSourceTableWasLost(t *testing.T) {
 			structure_revision = 'revision-1', status = 'ready',
 			backfill_last_event_id = 1, coverage_event_id = 1,
 			target_event_id = 1, processed_events = 1`,
+		`insert into usage_codex_legacy_identity_evidence_v1 (
+			structure_revision, physical_kind, physical_file, auth_index,
+			provider, auth_provider_snapshot, auth_account_id_snapshot,
+			auth_project_id_snapshot, account_snapshot,
+			min_evidence_at_ms, max_evidence_at_ms, chronology_unknown
+		) values ('1', 0, 'codex-a.json', 'auth-a', 'codex', 'codex', 'account-a',
+			'', 'same@example.com', 1, 1, 0)`,
 		`update usage_monitoring_search_index_state set ready = 1, updated_at_ms = 1
 		where id = 1`,
 		`update usage_data_migrations set
@@ -500,6 +507,7 @@ func TestMigrateClearsDerivedUsageWhenSourceTableWasLost(t *testing.T) {
 		"usage_monitoring_event_search_v1",
 		"usage_monitoring_header_latest_v1",
 		"usage_cache_accounting_v2_changes",
+		usageCodexLegacyIdentityEvidenceTable,
 	} {
 		assertTableCount(t, db, table, 0)
 	}
@@ -1044,7 +1052,8 @@ func TestUsageMonitoringModelFormatUpgradeRebuildsDerivedDataOnce(t *testing.T) 
 		`update usage_monitoring_rollup_state set
 			structure_revision = 'legacy', status = 'ready',
 			backfill_last_event_id = 1, coverage_event_id = 1,
-			target_event_id = 1, processed_events = 1, updated_at_ms = 1`,
+			target_event_id = 1, processed_events = 1, updated_at_ms = 1
+			where rollup_name in ('stats_v1', 'metadata_v1', 'projection_v1')`,
 		`update usage_monitoring_search_index_state set ready = 1, updated_at_ms = 1 where id = 1`,
 		`delete from settings where key = 'usage_monitoring_model_format_version'`,
 	} {
@@ -1085,7 +1094,8 @@ func TestUsageMonitoringModelFormatUpgradeRebuildsDerivedDataOnce(t *testing.T) 
 	}
 	rows, err := db.Query(`select rollup_name, structure_revision, status,
 		coverage_event_id, target_event_id, processed_events
-		from usage_monitoring_rollup_state order by rollup_name`)
+		from usage_monitoring_rollup_state
+		where rollup_name in ('stats_v1', 'metadata_v1', 'projection_v1') order by rollup_name`)
 	if err != nil {
 		t.Fatalf("read rebuilt monitoring states: %v", err)
 	}
@@ -3471,8 +3481,8 @@ func assertEmptyUsageDerivedState(t *testing.T, db *sql.DB) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate reset monitoring state: %v", err)
 	}
-	if monitoringStates != 3 {
-		t.Fatalf("reset monitoring state rows = %d, want 3", monitoringStates)
+	if monitoringStates != 4 {
+		t.Fatalf("reset monitoring state rows = %d, want 4", monitoringStates)
 	}
 	var searchReady int
 	if err := db.QueryRow(`select ready from usage_monitoring_search_index_state where id = 1`).Scan(&searchReady); err != nil {

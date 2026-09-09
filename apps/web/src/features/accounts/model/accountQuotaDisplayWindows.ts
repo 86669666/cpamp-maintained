@@ -129,6 +129,39 @@ export const isStandardAccountQuotaListWindow = (
   window.kind !== 'product' &&
   window.kind !== 'summary';
 
+export type AccountQuotaSemanticGroup = 'standard' | 'model' | 'other';
+
+export const getAccountQuotaSemanticGroup = (
+  window: Pick<AccountQuotaDisplayWindow, 'kind' | 'windowMode' | 'modelScope' | 'source'>
+): AccountQuotaSemanticGroup => {
+  const { kind, windowMode } = window;
+
+  if (
+    windowMode === 'non_window' ||
+    kind === 'billing' ||
+    kind === 'payg' ||
+    kind === 'product' ||
+    kind === 'summary'
+  ) {
+    return 'other';
+  }
+
+  if (
+    kind === 'five_hour' ||
+    kind === 'daily' ||
+    kind === 'weekly' ||
+    kind === 'monthly'
+  ) {
+    return isModelScopedAccountQuotaWindow(window) ? 'model' : 'standard';
+  }
+
+  if ((kind === undefined || kind === 'unknown') && isIntervalAccountQuotaWindow(window)) {
+    return isModelScopedAccountQuotaWindow(window) ? 'model' : 'standard';
+  }
+
+  return 'other';
+};
+
 const normalizeText = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ');
 
 const parseAntigravityWindowSeconds = (value: string | undefined): number | null => {
@@ -498,12 +531,13 @@ const buildClaudeQuotaDisplayWindows = (
       buildAccountQuotaDisplayWindow({
         key: 'extra-usage',
         label: options.t('claude_quota.extra_usage_label'),
-        kind: 'monthly',
+        kind: 'billing',
         remainingPercent: remainingPercentFromUsed(usedPercent),
         usedPercent,
         resetLabel: '-',
         amountLabel: formatClaudeExtraUsageAmount(quota.extraUsage),
         source: 'claude',
+        observedAtMs: quota.fetchedAtMs ?? null,
         nowMs: options.nowMs,
       })
     );

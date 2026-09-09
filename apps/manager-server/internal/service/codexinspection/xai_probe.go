@@ -930,13 +930,8 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 	}
 	period := readMap(config, "current_period", "currentPeriod")
 	periodType := strings.ToLower(readString(period, "type"))
-	periodStart := readString(period, "start")
 	periodEnd := readString(period, "end")
 	usage := readNullableFloat(config, "credit_usage_percent", "creditUsagePercent")
-	if usage == nil && strings.Contains(periodType, "weekly") && validXAIPeriodWindow(periodStart, periodEnd) {
-		zero := float64(0)
-		usage = &zero
-	}
 	monthlyLimit, hasMonthlyLimitEvidence := readXAICentFloatWithEvidence(config, "monthly_limit", "monthlyLimit")
 	nestedUsage := readMap(config, "usage")
 	nestedIncludedUsed, hasNestedIncludedEvidence := readXAICentFloatWithEvidence(nestedUsage, "included_used", "includedUsed")
@@ -987,6 +982,8 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 		onDemandUsedPercent = &value
 	}
 	hasOnDemandData := hasOnDemandCapEvidence || hasOnDemandUsedEvidence || positiveXAIFloat(onDemandUsed)
+	hasMeaningfulOnDemandData := positiveXAIFloat(onDemandCap) || positiveXAIFloat(onDemandUsed)
+	hasBillingPeriodData := hasMonthlyData || hasMeaningfulOnDemandData
 	if !hasMonthlyData {
 		monthlyLimit = nil
 		includedUsed = nil
@@ -1013,10 +1010,13 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 		}
 	}
 	billingCycle := readMap(config, "billing_cycle", "billingCycle")
-	billingPeriodEnd := firstNonEmpty(
-		readString(config, "billing_period_end", "billingPeriodEnd"),
-		readString(billingCycle, "billing_period_end", "billingPeriodEnd"),
-	)
+	billingPeriodEnd := ""
+	if hasBillingPeriodData {
+		billingPeriodEnd = firstNonEmpty(
+			readString(config, "billing_period_end", "billingPeriodEnd"),
+			readString(billingCycle, "billing_period_end", "billingPeriodEnd"),
+		)
+	}
 	hasWeeklyData := usage != nil || len(productUsage) > 0 || strings.Contains(periodType, "weekly")
 	if !hasWeeklyData && !hasMonthlyData && !hasOnDemandData {
 		return nil
@@ -1041,12 +1041,6 @@ func parseXAIBillingSummary(config map[string]any) *xaiBillingSummary {
 		BillingPeriodEnd:    billingPeriodEnd,
 		ProductUsage:        productUsage,
 	}
-}
-
-func validXAIPeriodWindow(start, end string) bool {
-	startAt, startErr := time.Parse(time.RFC3339, start)
-	endAt, endErr := time.Parse(time.RFC3339, end)
-	return startErr == nil && endErr == nil && endAt.After(startAt)
 }
 
 func xaiSummaryUsedPercent(summary *xaiBillingSummary) *float64 {

@@ -51,6 +51,7 @@ import {
   buildObservedCodexQuotaState,
   refreshQuotaWithConfig,
   type QuotaConfig,
+  type QuotaRefreshResult,
   type QuotaSetter,
 } from '@/components/quota';
 import { buildQuotaFailureState, getScopedQuotaState } from '@/components/quota/quotaConfigs';
@@ -384,6 +385,26 @@ const PASSIVE_ACCOUNTS_EVIDENCE_REFRESH_MS = 60_000;
 const CREDENTIAL_EVIDENCE_UNIQUE_FILE_NAME_BOUNDARY_PREFIX = 'unique-file-name\u0000';
 const CREDENTIAL_EVIDENCE_SOURCE_FILE_BOUNDARY_PREFIX = 'source-file\u0000';
 const CREDENTIAL_EVIDENCE_PROVIDER_BOUNDARY_PREFIX = 'provider\u0000';
+
+const getAccountQuotaRefreshKey = (row: AccountRow): string =>
+  `${row.provider}:${getQuotaCredentialStoreKey(row.raw)}`;
+
+type AccountQuotaRefreshOutcome =
+  | { status: 'success' }
+  | { status: 'error'; error: string }
+  | { status: 'ignored' };
+
+type AccountHistoryLoadOutcome = { status: 'success' } | { status: 'error'; error: string };
+
+const toAccountQuotaRefreshOutcome = <TState, TData>(
+  result: QuotaRefreshResult<TState, TData> | null
+): AccountQuotaRefreshOutcome => {
+  if (!result) return { status: 'ignored' };
+  return result.status === 'success'
+    ? { status: 'success' }
+    : { status: 'error', error: result.error };
+};
+
 interface CodexCredentialEvidenceInvalidation {
   file: AuthFileItem;
   invalidatedAtMs: number;
@@ -1276,6 +1297,9 @@ export function AccountsPage() {
   const inspectionSnapshotRef = useRef(inspectionSnapshot);
   inspectionSnapshotRef.current = inspectionSnapshot;
   const [quotaRefreshing, setQuotaRefreshing] = useState(false);
+  const [manualQuotaRefreshingKeys, setManualQuotaRefreshingKeys] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const [accountHistoryRefreshRevision, setAccountHistoryRefreshRevision] = useState(0);
   const [accountHistoryAutoRefreshRevision, setAccountHistoryAutoRefreshRevision] = useState(0);
@@ -1492,6 +1516,7 @@ export function AccountsPage() {
     promise: Promise<void>;
   } | null>(null);
   const quotaRefreshGenerationRef = useRef(0);
+  const manualQuotaRefreshingKeysRef = useRef<Set<string>>(new Set());
   const accountHistoryRefreshRequestIdRef = useRef(0);
   const accountHistoryRefreshPromiseRef = useRef<{
     key: string;
@@ -1590,6 +1615,8 @@ export function AccountsPage() {
     credentialMutationMarkerExhaustedRef.current.clear();
     quotaRefreshGenerationRef.current += 1;
     quotaRefreshBatchRef.current = null;
+    manualQuotaRefreshingKeysRef.current.clear();
+    setManualQuotaRefreshingKeys(new Set());
     quotaRequestVersionsRef.current.forEach((version, key) => {
       quotaRequestVersionsRef.current.set(key, version + 1);
     });
@@ -4575,6 +4602,9 @@ export function AccountsPage() {
           {
             provider,
             getLabel: (snapshot) => {
+              if (provider === 'claude' && snapshot.provider_window_id === 'extra-usage') {
+                return t('claude_quota.extra_usage_label');
+              }
               const kind = snapshot.window_kind;
               if (kind === 'rolling_24h') {
                 return t('accounts.detail_snapshot_window_rolling_24h');
@@ -5448,11 +5478,14 @@ export function AccountsPage() {
   }, [activeView, detailTab, loadUsageValues, selectedRowKey, usageValuesAutoLoadKey]);
 
   const loadAccountHistory = useCallback(
-    async (targetEntries?: AccountHistoryTargetEntry[]) => {
+    async (
+      targetEntries?: AccountHistoryTargetEntry[]
+    ): Promise<Map<string, AccountHistoryLoadOutcome>> => {
       const entries = targetEntries ?? accountHistoryTargets;
       const mergeResult = targetEntries !== undefined;
       const controllerRef = mergeResult ? accountHistoryTargetAbortRef : accountHistoryAutoAbortRef;
       const managerServiceBase = featureAvailability.managerServiceBase;
+      const outcomes = new Map<string, AccountHistoryLoadOutcome>();
       if (!mergeResult) {
         const activeRowKeys = new Set(entries.map((entry) => entry.rowKey));
         accountHistoryRequestVersionsRef.current = retainAccountHistoryRowKeys(
@@ -5469,7 +5502,7 @@ export function AccountsPage() {
         controllerRef.current &&
         accountHistoryAutoRequestContextKeyRef.current === accountHistoryAutoContextKey
       ) {
-        return;
+        return outcomes;
       }
       controllerRef.current?.abort();
       controllerRef.current = null;
@@ -5494,7 +5527,7 @@ export function AccountsPage() {
           entries.forEach((entry) => next.delete(entry.rowKey));
           return next.size === current.size ? current : next;
         });
-        return;
+        return outcomes;
       }
 
       const controller = new AbortController();
@@ -5537,12 +5570,13 @@ export function AccountsPage() {
               return {
                 batch,
                 response: null,
-                error: err instanceof Error ? err.message : t('notification.load_failed'),
+                error:
+                  err instanceof Error && err.message ? err.message : t('notification.load_failed'),
               };
             }
           }
         );
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted) return outcomes;
         const nextHistory = new Map<string, MonitoringAccountHistoryItem>();
         const failedRows = new Map<string, string>();
         batchResults.forEach(({ batch, response, error }) => {
@@ -5596,11 +5630,27 @@ export function AccountsPage() {
           });
           return next;
         });
+        entries.forEach((entry) => {
+          const requestVersion = requestVersions.get(entry.rowKey);
+          if (accountHistoryRequestVersionsRef.current.get(entry.rowKey) !== requestVersion) {
+            return;
+          }
+          const error = failedRows.get(entry.rowKey);
+          outcomes.set(entry.rowKey, error ? { status: 'error', error } : { status: 'success' });
+        });
+        return outcomes;
       } catch (err: unknown) {
         const requestWasAborted = controller.signal.aborted;
         if (!requestWasAborted) controller.abort();
-        if (requestWasAborted) return;
-        const message = err instanceof Error ? err.message : t('notification.load_failed');
+        if (requestWasAborted) return outcomes;
+        const message =
+          err instanceof Error && err.message ? err.message : t('notification.load_failed');
+        entries.forEach((entry) => {
+          const requestVersion = requestVersions.get(entry.rowKey);
+          if (accountHistoryRequestVersionsRef.current.get(entry.rowKey) === requestVersion) {
+            outcomes.set(entry.rowKey, { status: 'error', error: message });
+          }
+        });
         setAccountHistoryErrorsByRowKey((current) => {
           const next = new Map(current);
           entries.forEach((entry) => {
@@ -5611,6 +5661,7 @@ export function AccountsPage() {
           });
           return next;
         });
+        return outcomes;
       } finally {
         if (controllerRef.current === controller) {
           controllerRef.current = null;
@@ -5770,8 +5821,8 @@ export function AccountsPage() {
   }, [detailEventsAutoLoadKey, detailTab, loadDetailEvents, selectedRow]);
 
   const refreshQuotaForRow = useCallback(
-    async (row: AccountRow) => {
-      if (row.runtimeOnly) return false;
+    async (row: AccountRow): Promise<AccountQuotaRefreshOutcome> => {
+      if (row.runtimeOnly) return { status: 'ignored' };
       const refreshWithConfig = <TState, TData>(
         config: QuotaConfig<TState, TData>,
         setQuota: QuotaSetter<TState>,
@@ -5798,7 +5849,8 @@ export function AccountsPage() {
             setCodexQuota,
             getScopedQuotaState(CODEX_CONFIG, baseQuotaStores.codexQuota, row.raw)
           );
-          if (!result || result.status !== 'success') return false;
+          const outcome = toAccountQuotaRefreshOutcome(result);
+          if (!result || result.status !== 'success') return outcome;
           const refreshedQuota = result.state;
           const healthyQuota = isKnownHealthyCodexQuota(refreshedQuota);
           invalidateCodexCredentialStatusForSelectionKeys([row.selectionKey], {
@@ -5806,50 +5858,42 @@ export function AccountsPage() {
             supersedeQuotaActionEvidence: healthyQuota,
             supersedeCooldownEvidence: healthyQuota,
           });
-          return true;
+          return outcome;
         }
         case CLAUDE_CONFIG.type:
-          return (
-            (
-              await refreshWithConfig(
-                CLAUDE_CONFIG,
-                setClaudeQuota,
-                getScopedQuotaState(CLAUDE_CONFIG, baseQuotaStores.claudeQuota, row.raw)
-              )
-            )?.status === 'success'
+          return toAccountQuotaRefreshOutcome(
+            await refreshWithConfig(
+              CLAUDE_CONFIG,
+              setClaudeQuota,
+              getScopedQuotaState(CLAUDE_CONFIG, baseQuotaStores.claudeQuota, row.raw)
+            )
           );
         case ANTIGRAVITY_CONFIG.type:
-          return (
-            (
-              await refreshWithConfig(
-                ANTIGRAVITY_CONFIG,
-                setAntigravityQuota,
-                getScopedQuotaState(ANTIGRAVITY_CONFIG, baseQuotaStores.antigravityQuota, row.raw)
-              )
-            )?.status === 'success'
+          return toAccountQuotaRefreshOutcome(
+            await refreshWithConfig(
+              ANTIGRAVITY_CONFIG,
+              setAntigravityQuota,
+              getScopedQuotaState(ANTIGRAVITY_CONFIG, baseQuotaStores.antigravityQuota, row.raw)
+            )
           );
         case KIMI_CONFIG.type:
-          return (
-            (
-              await refreshWithConfig(
-                KIMI_CONFIG,
-                setKimiQuota,
-                getScopedQuotaState(KIMI_CONFIG, baseQuotaStores.kimiQuota, row.raw)
-              )
-            )?.status === 'success'
+          return toAccountQuotaRefreshOutcome(
+            await refreshWithConfig(
+              KIMI_CONFIG,
+              setKimiQuota,
+              getScopedQuotaState(KIMI_CONFIG, baseQuotaStores.kimiQuota, row.raw)
+            )
           );
         case XAI_CONFIG.type:
-          return (
-            (
-              await refreshWithConfig<XaiQuotaState, NonNullable<XaiQuotaState['billing']>>(
-                XAI_CONFIG,
-                setXaiQuota,
-                getScopedQuotaState(XAI_CONFIG, baseQuotaStores.xaiQuota, row.raw)
-              )
-            )?.status === 'success'
+          return toAccountQuotaRefreshOutcome(
+            await refreshWithConfig<XaiQuotaState, NonNullable<XaiQuotaState['billing']>>(
+              XAI_CONFIG,
+              setXaiQuota,
+              getScopedQuotaState(XAI_CONFIG, baseQuotaStores.xaiQuota, row.raw)
+            )
           );
         default:
-          return false;
+          return { status: 'error', error: t('common.unknown_error') };
       }
     },
     [
@@ -5893,17 +5937,54 @@ export function AccountsPage() {
               perProviderConcurrency: MAX_CONCURRENT_QUOTA_REFRESHES_PER_PROVIDER,
               maxConcurrentProviders: MAX_CONCURRENT_QUOTA_REFRESH_PROVIDERS,
             },
-            ({ item }) => (isCurrentBatch() ? refreshQuotaForRow(item) : Promise.resolve(false))
+            ({ item }) =>
+              isCurrentBatch()
+                ? refreshQuotaForRow(item)
+                : Promise.resolve<AccountQuotaRefreshOutcome>({ status: 'ignored' })
           );
           if (!isCurrentBatch()) return;
-          const successCount = results.filter(Boolean).length;
-          showNotification(
-            t('accounts.quota_refresh_result', {
-              success: successCount,
-              total: taskPlan.length,
-            }),
-            successCount === taskPlan.length ? 'success' : 'warning'
-          );
+          const currentResults = results.filter((result) => result.status !== 'ignored');
+          if (currentResults.length === 0) return;
+
+          const successCount = currentResults.filter(
+            (result) => result.status === 'success'
+          ).length;
+          const firstError = currentResults.find((result) => result.status === 'error');
+          const totalCount = currentResults.length;
+          if (taskPlan.length === 1 && totalCount === 1) {
+            const account = taskPlan[0]?.item;
+            if (!account) return;
+            const rawName = account.accountLabel || account.fileName;
+            const name = accountDisplayMode === 'full' ? rawName : maskQuotaAccountText(rawName);
+            if (firstError?.status === 'error') {
+              showNotification(
+                t('accounts.quota_refresh_failed', { name, message: firstError.error }),
+                'error'
+              );
+            } else {
+              showNotification(t('accounts.quota_refresh_success', { name }), 'success');
+            }
+            return;
+          }
+
+          if (firstError?.status === 'error') {
+            showNotification(
+              t('accounts.quota_refresh_result_with_error', {
+                success: successCount,
+                total: totalCount,
+                message: firstError.error,
+              }),
+              successCount === 0 ? 'error' : 'warning'
+            );
+          } else {
+            showNotification(
+              t('accounts.quota_refresh_result', {
+                success: successCount,
+                total: totalCount,
+              }),
+              'success'
+            );
+          }
         } finally {
           if (
             quotaRefreshBatchRef.current?.generation === generation &&
@@ -5917,18 +5998,62 @@ export function AccountsPage() {
       quotaRefreshBatchRef.current = { connectionFingerprint, generation, promise: batchPromise };
       return batchPromise;
     },
-    [connectionFingerprint, refreshQuotaForRow, showNotification, t]
+    [accountDisplayMode, connectionFingerprint, refreshQuotaForRow, showNotification, t]
   );
 
   const refreshAccountQuota = useCallback(
     async (row: AccountRow): Promise<void> => {
-      await refreshQuotaRows([row]);
-      if (selectedRowKeyRef.current === row.selectionKey) {
-        setAccountQuotaRefreshRevision((current) => current + 1);
+      if (row.runtimeOnly) return;
+      const refreshKey = getAccountQuotaRefreshKey(row);
+      if (manualQuotaRefreshingKeysRef.current.has(refreshKey)) return;
+
+      manualQuotaRefreshingKeysRef.current.add(refreshKey);
+      setManualQuotaRefreshingKeys((current) => {
+        const next = new Set(current);
+        next.add(refreshKey);
+        return next;
+      });
+
+      const generation = quotaRefreshGenerationRef.current;
+      const isCurrentContext = () =>
+        quotaRefreshGenerationRef.current === generation &&
+        oauthEditorConnectionFingerprintRef.current === connectionFingerprint;
+
+      try {
+        const result = await refreshQuotaForRow(row);
+        if (!isCurrentContext() || result.status === 'ignored') return;
+
+        const rawName = row.accountLabel || row.fileName;
+        const name = accountDisplayMode === 'full' ? rawName : maskQuotaAccountText(rawName);
+        if (result.status === 'error') {
+          showNotification(
+            t('accounts.quota_refresh_failed', { name, message: result.error }),
+            'error'
+          );
+        } else {
+          showNotification(t('accounts.quota_refresh_success', { name }), 'success');
+        }
+
+        if (selectedRowKeyRef.current === row.selectionKey) {
+          setAccountQuotaRefreshRevision((current) => current + 1);
+        }
+      } finally {
+        if (isCurrentContext()) {
+          manualQuotaRefreshingKeysRef.current.delete(refreshKey);
+          setManualQuotaRefreshingKeys((current) => {
+            if (!current.has(refreshKey)) return current;
+            const next = new Set(current);
+            next.delete(refreshKey);
+            return next;
+          });
+        }
       }
     },
-    [refreshQuotaRows]
+    [accountDisplayMode, connectionFingerprint, refreshQuotaForRow, showNotification, t]
   );
+
+  const isManualQuotaRefreshing = (row: AccountRow): boolean =>
+    manualQuotaRefreshingKeys.has(getAccountQuotaRefreshKey(row));
 
   const refreshAccountHistory = useCallback(
     (row: AccountRow): Promise<void> => {
@@ -5961,13 +6086,23 @@ export function AccountsPage() {
         };
         setHistoryRefreshing(true);
         try {
-          await loadAccountHistory(buildAccountHistoryTargetEntries([row]));
+          const outcomes = await loadAccountHistory(buildAccountHistoryTargetEntries([row]));
           if (!isCurrentContext()) return;
           if (row.provider === CODEX_CONFIG.type) {
             await loadHeaderSnapshots();
             if (!isCurrentContext()) return;
           }
           setAccountHistoryRefreshRevision((current) => current + 1);
+          const outcome = outcomes.get(row.selectionKey);
+          if (!outcome) return;
+          if (outcome.status === 'error') {
+            showNotification(
+              t('accounts.history_refresh_failed', { message: outcome.error }),
+              'error'
+            );
+          } else {
+            showNotification(t('accounts.history_refresh_success'), 'success');
+          }
         } finally {
           if (accountHistoryRefreshRequestIdRef.current === requestId) {
             accountHistoryRefreshPromiseRef.current = null;
@@ -5988,6 +6123,8 @@ export function AccountsPage() {
       managementKey,
       managerConnectionFingerprint,
       requestHistoryAvailable,
+      showNotification,
+      t,
     ]
   );
 
@@ -6600,6 +6737,7 @@ export function AccountsPage() {
           options={[
             { value: 'all', label: t('accounts.status_all') },
             { value: 'available', label: t('accounts.status_available') },
+            { value: 'enabled', label: t('accounts.status_enabled') },
             { value: 'unconfirmed', label: t('accounts.metric_unconfirmed') },
             { value: 'low', label: t('accounts.status_low') },
             { value: 'exhausted', label: t('accounts.status_exhausted') },
@@ -7057,11 +7195,14 @@ export function AccountsPage() {
           iconOnly
           className={`${styles.accountIconButton} ${styles.accountIconButtonRefresh}`}
           onClick={() => void refreshAccountQuota(row)}
-          disabled={disableControls || quotaRefreshing || row.runtimeOnly}
+          disabled={
+            disableControls || quotaRefreshing || isManualQuotaRefreshing(row) || row.runtimeOnly
+          }
+          loading={isManualQuotaRefreshing(row)}
           title={t('accounts.refresh_quota')}
           aria-label={t('accounts.refresh_quota')}
         >
-          <IconRefreshCw size={15} />
+          {!isManualQuotaRefreshing(row) ? <IconRefreshCw size={15} /> : null}
         </Button>
         <Button
           variant="secondary"
@@ -7769,6 +7910,7 @@ export function AccountsPage() {
     };
     const selectedCredentialRefreshing =
       credentialRefreshing[getAuthFileSelectionKey(selectedRow.raw)] === true;
+    const selectedQuotaRefreshing = isManualQuotaRefreshing(selectedRow);
     const drawerMoreItems: DropdownMenuItem[] = [
       {
         key: 'models',
@@ -7882,10 +8024,10 @@ export function AccountsPage() {
             <Button
               variant="secondary"
               onClick={() => void refreshAccountQuota(selectedRow)}
-              loading={quotaRefreshing}
-              disabled={disableControls || selectedRow.runtimeOnly}
+              loading={quotaRefreshing || selectedQuotaRefreshing}
+              disabled={disableControls || selectedQuotaRefreshing || selectedRow.runtimeOnly}
             >
-              {!quotaRefreshing ? <IconRefreshCw size={16} /> : null}
+              {!quotaRefreshing && !selectedQuotaRefreshing ? <IconRefreshCw size={16} /> : null}
               {t('accounts.refresh_quota')}
             </Button>
             <Button

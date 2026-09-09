@@ -16,6 +16,7 @@ import {
 import type { AccountRow } from './accountRows';
 import {
   buildAccountQuotaDisplayWindow,
+  getAccountQuotaSemanticGroup,
   type AccountQuotaDisplayWindow,
 } from './accountQuotaDisplayWindows';
 import { buildAccountQuotaWindowDefinitions } from './accountQuotaWindowDefinitions';
@@ -984,6 +985,117 @@ describe('account quota snapshots', () => {
         quotaProgressObservedAtMs: null,
       },
     });
+  });
+
+  it('keeps an unknown-kind fixed interval snapshot in the model semantic group after restore', () => {
+    const [restored] = mergeAccountQuotaSnapshotWindows(
+      [],
+      [
+        makeSnapshot({
+          provider_window_id: 'custom-12h',
+          window_kind: 'unknown',
+          window_mode: 'fixed',
+          model_scope_kind: 'family',
+          model_scope_key: 'gemini',
+          duration_seconds: 43_200,
+          cycle_end_ms: 43_201_000,
+        }),
+      ],
+      { provider: 'antigravity' }
+    );
+
+    expect(restored).toMatchObject({
+      kind: 'unknown',
+      windowMode: 'fixed',
+      modelScope: { kind: 'family', key: 'gemini', complete: true },
+      display: {
+        kind: 'unknown',
+        windowMode: 'fixed',
+      },
+    });
+    expect(getAccountQuotaSemanticGroup(restored.display)).toBe('model');
+  });
+
+  it('canonicalizes a legacy Claude extra usage snapshot to billing semantics', () => {
+    const [restored] = mergeAccountQuotaSnapshotWindows(
+      [],
+      [
+        makeSnapshot({
+          provider_window_id: 'extra-usage',
+          window_kind: 'monthly',
+          window_mode: 'unknown',
+          model_scope_kind: 'all',
+          used_percent: 30,
+          remaining_percent: 70,
+        }),
+      ],
+      { provider: 'claude' }
+    );
+
+    expect(restored).toMatchObject({
+      providerWindowId: 'extra-usage',
+      kind: 'billing',
+      windowMode: 'non_window',
+      remainingPercent: 70,
+      display: {
+        kind: 'billing',
+        windowMode: 'non_window',
+        remainingPercent: 70,
+      },
+    });
+    expect(getAccountQuotaSemanticGroup(restored.display)).toBe('other');
+  });
+
+  it('keeps live Claude extra usage billing semantics when a legacy snapshot is newer', () => {
+    const liveDefinition = makeDefinition({
+      key: 'extra-usage',
+      providerWindowId: 'extra-usage',
+      provider: 'claude',
+      kind: 'billing',
+      windowMode: 'non_window',
+      observedAtMs: 1_000,
+      quotaProgressObservedAtMs: 1_000,
+      remainingPercent: 80,
+      usedPercent: 20,
+      display: {
+        ...makeDefinition().display,
+        key: 'extra-usage',
+        kind: 'billing',
+        source: 'claude',
+        windowMode: 'non_window',
+        observedAtMs: 1_000,
+        quotaProgressObservedAtMs: 1_000,
+        remainingPercent: 80,
+        usedPercent: 20,
+      },
+    });
+    const [merged] = mergeAccountQuotaSnapshotWindows(
+      [liveDefinition],
+      [
+        makeSnapshot({
+          provider_window_id: 'extra-usage',
+          window_kind: 'monthly',
+          window_mode: 'unknown',
+          model_scope_kind: 'all',
+          observed_at_ms: 2_000,
+          used_percent: 30,
+          remaining_percent: 70,
+        }),
+      ],
+      { provider: 'claude' }
+    );
+
+    expect(merged).toMatchObject({
+      kind: 'billing',
+      windowMode: 'non_window',
+      remainingPercent: 70,
+      display: {
+        kind: 'billing',
+        windowMode: 'non_window',
+        remainingPercent: 70,
+      },
+    });
+    expect(getAccountQuotaSemanticGroup(merged.display)).toBe('other');
   });
 
   it('does not restamp remaining-only quota under a newer snapshot observation', () => {

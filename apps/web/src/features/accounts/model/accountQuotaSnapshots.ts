@@ -605,9 +605,18 @@ export const mergeAccountQuotaSnapshotWindows = (
             model_ids: undefined,
           }
         : snapshot;
-    return providerWindowId === snapshot.provider_window_id && normalizedSnapshot === snapshot
+    const semanticNormalizedSnapshot =
+      options.provider === 'claude' && snapshot.provider_window_id === 'extra-usage'
+        ? {
+            ...normalizedSnapshot,
+            window_kind: 'billing',
+            window_mode: 'non_window' as const,
+          }
+        : normalizedSnapshot;
+    return providerWindowId === snapshot.provider_window_id &&
+      semanticNormalizedSnapshot === snapshot
       ? snapshot
-      : { ...normalizedSnapshot, provider_window_id: providerWindowId };
+      : { ...semanticNormalizedSnapshot, provider_window_id: providerWindowId };
   });
   const scopedProviderWindowIds = new Set<string>();
   const scopedProviderWindowAliases = new Set<string>();

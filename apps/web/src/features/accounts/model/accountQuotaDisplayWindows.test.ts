@@ -6,6 +6,7 @@ import { buildAccountRows, type AccountQuotaStores } from './accountRows';
 import {
   buildAccountQuotaDisplayWindow,
   buildAccountQuotaDisplayWindows,
+  getAccountQuotaSemanticGroup,
   getQuotaWindowShortLabel,
   isIntervalAccountQuotaWindow,
   isModelScopedAccountQuotaWindow,
@@ -143,6 +144,91 @@ describe('accountQuotaDisplayWindows', () => {
 
       expect(isModelScopedAccountQuotaWindow(window)).toBe(true);
       expect(isStandardAccountQuotaListWindow(window)).toBe(false);
+    });
+
+    it('classifies unknown-boundary weekly account-wide window as standard semantic group while failing closed for intervals', () => {
+      const window = {
+        kind: 'weekly' as const,
+        windowMode: 'unknown' as const,
+        source: 'kimi' as const,
+        modelScope: { kind: 'all' as const, complete: true },
+      };
+
+      expect(getAccountQuotaSemanticGroup(window)).toBe('standard');
+      expect(isIntervalAccountQuotaWindow(window)).toBe(false);
+      expect(isStandardAccountQuotaListWindow(window)).toBe(false);
+    });
+
+    it('classifies unknown-boundary weekly model-scoped window as model semantic group', () => {
+      const window = {
+        kind: 'weekly' as const,
+        windowMode: 'unknown' as const,
+        source: 'codex' as const,
+        modelScope: { kind: 'models' as const, models: ['gpt-5'], complete: true },
+      };
+
+      expect(getAccountQuotaSemanticGroup(window)).toBe('model');
+    });
+
+    it('classifies an explicit unknown fixed account-wide interval as standard quota', () => {
+      const window = {
+        kind: 'unknown' as const,
+        windowMode: 'fixed' as const,
+        source: 'antigravity' as const,
+        modelScope: { kind: 'all' as const, complete: true },
+      };
+
+      expect(isIntervalAccountQuotaWindow(window)).toBe(true);
+      expect(getAccountQuotaSemanticGroup(window)).toBe('standard');
+      expect(isStandardAccountQuotaListWindow(window)).toBe(true);
+    });
+
+    it('classifies an explicit unknown fixed model-scoped interval as model quota', () => {
+      const window = {
+        kind: 'unknown' as const,
+        windowMode: 'fixed' as const,
+        source: 'antigravity' as const,
+        modelScope: { kind: 'family' as const, key: 'gemini', complete: true },
+      };
+
+      expect(isIntervalAccountQuotaWindow(window)).toBe(true);
+      expect(getAccountQuotaSemanticGroup(window)).toBe('model');
+      expect(isStandardAccountQuotaListWindow(window)).toBe(false);
+    });
+
+    it('keeps an explicit unknown kind without a reliable interval as other quota', () => {
+      const window = {
+        kind: 'unknown' as const,
+        windowMode: 'unknown' as const,
+        source: 'antigravity' as const,
+        modelScope: { kind: 'all' as const, complete: true },
+      };
+
+      expect(isIntervalAccountQuotaWindow(window)).toBe(false);
+      expect(getAccountQuotaSemanticGroup(window)).toBe('other');
+    });
+
+    it('classifies fixed billing window as other semantic group without entering standard quota', () => {
+      const window = {
+        kind: 'billing' as const,
+        windowMode: 'fixed' as const,
+        source: 'xai' as const,
+        modelScope: { kind: 'all' as const, complete: true },
+      };
+
+      expect(getAccountQuotaSemanticGroup(window)).toBe('other');
+      expect(isIntervalAccountQuotaWindow(window)).toBe(true);
+      expect(isStandardAccountQuotaListWindow(window)).toBe(false);
+    });
+
+    it('retains backward compatibility by classifying undefined kind with fixed interval as standard semantic group', () => {
+      const window = {
+        windowMode: 'fixed' as const,
+        source: 'kimi' as const,
+        modelScope: { kind: 'all' as const, complete: true },
+      };
+
+      expect(getAccountQuotaSemanticGroup(window)).toBe('standard');
     });
   });
 
@@ -284,6 +370,7 @@ describe('accountQuotaDisplayWindows', () => {
       claudeQuota: {
         'claude.json': {
           status: 'success',
+          fetchedAtMs: 2_000,
           windows: [
             {
               id: 'seven_day',
@@ -329,12 +416,15 @@ describe('accountQuotaDisplayWindows', () => {
     expect(windows[1]).toMatchObject({
       key: 'extra-usage',
       label: 'Extra Usage',
-      kind: 'monthly',
+      kind: 'billing',
       remainingPercent: 70,
       usedPercent: 30,
       amountLabel: '$1.50 / $5.00',
       source: 'claude',
+      observedAtMs: 2_000,
+      quotaProgressObservedAtMs: 2_000,
     });
+    expect(getAccountQuotaSemanticGroup(windows[1])).toBe('other');
   });
 
   it('flattens Antigravity groups while retaining group and bucket metadata', () => {
@@ -549,6 +639,46 @@ describe('accountQuotaDisplayWindows', () => {
       amountLabel: '3 / 10',
       source: 'kimi',
     });
+  });
+
+  it('builds top-level Kimi weekly quota with 604800s duration as fixed weekly interval in standard semantic group', () => {
+    const stores = {
+      ...emptyStores(),
+      kimiQuota: {
+        'kimi.json': {
+          status: 'success',
+          rows: [
+            {
+              id: 'summary',
+              labelKey: 'kimi_quota.weekly_limit',
+              used: 17,
+              limit: 100,
+              resetAtMs: Date.parse('2026-09-13T00:24:47.694Z'),
+              resetAccuracy: 'exact',
+              limitWindowSeconds: 604_800,
+            },
+          ],
+        },
+      },
+    } satisfies AccountQuotaStores;
+    const row = buildRow({ name: 'kimi.json', type: 'kimi' }, stores);
+
+    const windows = buildAccountQuotaDisplayWindows(row, {
+      stores,
+      translateQuotaWindowLabel,
+      t,
+    });
+
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({
+      key: 'summary',
+      kind: 'weekly',
+      windowMode: 'fixed',
+      limitWindowSeconds: 604_800,
+    });
+    expect(getAccountQuotaSemanticGroup(windows[0])).toBe('standard');
+    expect(isIntervalAccountQuotaWindow(windows[0])).toBe(true);
+    expect(isStandardAccountQuotaListWindow(windows[0])).toBe(true);
   });
 
   it('splits xAI billing into monthly and pay-as-you-go windows', () => {
@@ -786,6 +916,63 @@ describe('accountQuotaDisplayWindows', () => {
     });
 
     expect(windows.map((window) => window.key)).toEqual(['credits-period']);
+  });
+
+  it('keeps unknown weekly xAI usage separate from the monthly billing reset', () => {
+    const weeklyResetMs = Date.parse('2026-09-12T00:00:00Z');
+    const monthlyResetMs = Date.parse('2026-10-01T00:00:00Z');
+    const stores = {
+      ...emptyStores(),
+      xaiQuota: {
+        'xai.json': {
+          status: 'success',
+          billing: {
+            periodType: 'weekly',
+            usagePercent: null,
+            periodStart: '2026-09-05T00:00:00Z',
+            periodEnd: '2026-09-12T00:00:00Z',
+            productUsage: [],
+            monthlyLimitCents: 0,
+            usedCents: 0,
+            includedUsedCents: 0,
+            onDemandCapCents: 0,
+            onDemandUsedCents: 0,
+            onDemandUsedPercent: null,
+            billingPeriodStart: '2026-09-01T00:00:00Z',
+            billingPeriodEnd: '2026-10-01T00:00:00Z',
+            usedPercent: null,
+          },
+        },
+      },
+    } satisfies AccountQuotaStores;
+    const row = buildRow({ name: 'xai.json', type: 'xai' }, stores);
+
+    const windows = buildAccountQuotaDisplayWindows(row, {
+      stores,
+      translateQuotaWindowLabel,
+      t,
+    });
+    const weekly = windows.find((window) => window.key === 'credits-period');
+    const billing = windows.find((window) => window.key === 'billing');
+
+    expect(weekly).toMatchObject({
+      key: 'credits-period',
+      kind: 'weekly',
+      usedPercent: null,
+      remainingPercent: null,
+      resetAtMs: weeklyResetMs,
+      limitWindowSeconds: 7 * 24 * 60 * 60,
+      windowMode: 'fixed',
+      cycleStartMs: Date.parse('2026-09-05T00:00:00Z'),
+      cycleEndMs: weeklyResetMs,
+    });
+    expect(billing).toMatchObject({
+      key: 'billing',
+      usedPercent: null,
+      remainingPercent: null,
+      resetAtMs: monthlyResetMs,
+    });
+    expect(windows.some((window) => window.key === 'pay-as-you-go')).toBe(false);
   });
 
   it('does not create a monthly window when usage exists without limit evidence', () => {

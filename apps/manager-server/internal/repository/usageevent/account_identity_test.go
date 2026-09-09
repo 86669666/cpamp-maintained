@@ -3,6 +3,7 @@ package usageevent
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -393,6 +394,168 @@ func identityChronologyEvent(hash string, createdAtMS int64, file, authIndex, pr
 	event.CreatedAtMS = createdAtMS
 	event.TimestampMS = createdAtMS
 	return event
+}
+
+func TestGroupedLegacyAccountIdentityEvidenceCompactsDuplicateRowsAndPreservesConflicts(t *testing.T) {
+	const repeatedRows = 100
+	fields := usageidentity.Fields{
+		AuthFileSnapshot:      "codex-a.json",
+		AuthIndex:             "auth-a",
+		AuthProviderSnapshot:  "codex",
+		AuthAccountIDSnapshot: "account-a",
+		AccountSnapshot:       "same@example.com",
+		Source:                "codex-a.json",
+	}
+
+	tests := []struct {
+		name              string
+		buildEvents       func() []usage.Event
+		wantGroups        int
+		wantAllowed       bool
+		wantMinEvidenceAt int64
+		wantMaxEvidenceAt int64
+		wantUnknownGroup  bool
+	}{
+		{
+			name: "identical trusted evidence compacts to one group",
+			buildEvents: func() []usage.Event {
+				return repeatedIdentityEvidenceEvents(repeatedRows, 1000, "codex", "account-a", "same@example.com", "")
+			},
+			wantGroups:        1,
+			wantAllowed:       true,
+			wantMinEvidenceAt: 1000,
+			wantMaxEvidenceAt: 1099,
+		},
+		{
+			name: "weak and trusted evidence remain separate groups",
+			buildEvents: func() []usage.Event {
+				events := repeatedIdentityEvidenceEvents(repeatedRows, 1000, "codex", "", "same@example.com", "")
+				return append(events, repeatedIdentityEvidenceEvents(repeatedRows, 2000, "codex", "account-a", "same@example.com", "")...)
+			},
+			wantGroups:  2,
+			wantAllowed: true,
+		},
+		{
+			name: "unknown weak chronology is retained in its group",
+			buildEvents: func() []usage.Event {
+				events := repeatedIdentityEvidenceEvents(repeatedRows, 1000, "codex", "", "same@example.com", "")
+				unknown := repeatedIdentityEvidenceEvents(1, 0, "codex", "", "same@example.com", "")
+				unknown[0].AuthSnapshotAtMS = 0
+				unknown[0].CreatedAtMS = 0
+				events = append(events, unknown...)
+				return append(events, repeatedIdentityEvidenceEvents(repeatedRows, 2000, "codex", "account-a", "same@example.com", "")...)
+			},
+			wantGroups:       2,
+			wantAllowed:      false,
+			wantUnknownGroup: true,
+		},
+		{
+			name: "unknown trusted chronology is retained in its group",
+			buildEvents: func() []usage.Event {
+				events := repeatedIdentityEvidenceEvents(repeatedRows, 1000, "codex", "", "same@example.com", "")
+				unknown := repeatedIdentityEvidenceEvents(1, 0, "codex", "account-a", "same@example.com", "")
+				unknown[0].AuthSnapshotAtMS = 0
+				unknown[0].CreatedAtMS = 0
+				return append(events, unknown...)
+			},
+			wantGroups:       2,
+			wantAllowed:      false,
+			wantUnknownGroup: true,
+		},
+		{
+			name: "one conflicting member is not aggregated away",
+			buildEvents: func() []usage.Event {
+				events := repeatedIdentityEvidenceEvents(repeatedRows, 1000, "codex", "account-a", "same@example.com", "")
+				return append(events, repeatedIdentityEvidenceEvents(1, 2000, "codex", "account-a", "other@example.com", "")...)
+			},
+			wantGroups:  2,
+			wantAllowed: false,
+		},
+		{
+			name: "one conflicting workspace is not aggregated away",
+			buildEvents: func() []usage.Event {
+				events := repeatedIdentityEvidenceEvents(repeatedRows, 1000, "codex", "account-a", "same@example.com", "")
+				return append(events, repeatedIdentityEvidenceEvents(1, 2000, "codex", "account-b", "same@example.com", "")...)
+			},
+			wantGroups:  2,
+			wantAllowed: false,
+		},
+		{
+			name: "one foreign provider is not aggregated away",
+			buildEvents: func() []usage.Event {
+				events := repeatedIdentityEvidenceEvents(repeatedRows, 1000, "codex", "account-a", "same@example.com", "")
+				return append(events, repeatedIdentityEvidenceEvents(1, 2000, "openai", "account-a", "same@example.com", "")...)
+			},
+			wantGroups:  2,
+			wantAllowed: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, err := sqliterepo.Open(filepath.Join(t.TempDir(), "usage.sqlite"))
+			if err != nil {
+				t.Fatalf("open database: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			repo := New(db)
+			if _, err := repo.InsertBatch(context.Background(), test.buildEvents()); err != nil {
+				t.Fatalf("insert identity events: %v", err)
+			}
+
+			predicates := legacyAccountIdentityPredicates(fields.AuthFileSnapshot, fields.AuthIndex)
+			evidence, err := queryLegacyAccountIdentityEvidence(context.Background(), db, predicates[0])
+			if err != nil {
+				t.Fatalf("query grouped identity evidence: %v", err)
+			}
+			if len(evidence) != test.wantGroups {
+				t.Fatalf("grouped evidence count = %d, want %d: %#v", len(evidence), test.wantGroups, evidence)
+			}
+			if test.wantMinEvidenceAt != 0 {
+				if len(evidence) != 1 || evidence[0].minEvidenceAtMS != test.wantMinEvidenceAt || evidence[0].maxEvidenceAtMS != test.wantMaxEvidenceAt || evidence[0].chronologyUnknown {
+					t.Fatalf("grouped chronology = %#v, want min=%d max=%d known", evidence, test.wantMinEvidenceAt, test.wantMaxEvidenceAt)
+				}
+			}
+			if test.wantUnknownGroup {
+				found := false
+				for _, group := range evidence {
+					if group.chronologyUnknown {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("grouped chronology = %#v, want an unknown chronology group", evidence)
+				}
+			}
+
+			_, allowed, err := repo.ResolveCodexLegacyAccountKey(context.Background(), fields)
+			if err != nil {
+				t.Fatalf("resolve grouped identity: %v", err)
+			}
+			if allowed != test.wantAllowed {
+				t.Fatalf("allowed = %v, want %v", allowed, test.wantAllowed)
+			}
+		})
+	}
+}
+
+func repeatedIdentityEvidenceEvents(count int, startMS int64, provider, accountID, member, projectID string) []usage.Event {
+	events := make([]usage.Event, 0, count)
+	for i := 0; i < count; i++ {
+		event := identityChronologyEvent(
+			fmt.Sprintf("grouped-%s-%s-%s-%s-%d-%d", provider, accountID, member, projectID, startMS, i),
+			startMS+int64(i),
+			"codex-a.json",
+			"auth-a",
+			provider,
+			accountID,
+			projectID,
+		)
+		event.AccountSnapshot = member
+		events = append(events, event)
+	}
+	return events
 }
 
 func TestResolveCodexLegacyAccountKeyAcceptsValidMarkerOnlyHistory(t *testing.T) {

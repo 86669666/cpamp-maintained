@@ -1118,13 +1118,6 @@ const resolveXaiCentCandidate = (...values: unknown[]) => {
 const normalizeXaiPeriodTimestamp = (value: unknown): string | undefined =>
   normalizeStringValue(value) ?? undefined;
 
-const hasValidXaiPeriodWindow = (start?: string, end?: string): boolean => {
-  if (!start || !end) return false;
-  const startMs = Date.parse(start);
-  const endMs = Date.parse(end);
-  return Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs;
-};
-
 const resolveXaiBillingConfig = (payload: XaiBillingPayload | null): XaiBillingConfig | null => {
   if (!payload || typeof payload !== 'object') return null;
   return payload.config ?? (payload as XaiBillingConfig);
@@ -1198,9 +1191,7 @@ export const buildXaiBillingSummary = (
   );
   const periodStart = normalizeXaiPeriodTimestamp(currentPeriod?.start);
   const periodEnd = normalizeXaiPeriodTimestamp(currentPeriod?.end);
-  const creditUsagePercent =
-    rawCreditUsagePercent ??
-    (periodType === 'weekly' && hasValidXaiPeriodWindow(periodStart, periodEnd) ? 0 : null);
+  const creditUsagePercent = rawCreditUsagePercent;
   const billingCycle = config.billingCycle ?? config.billing_cycle ?? null;
   const nestedUsage = config.usage ?? null;
   const productUsage = normalizeXaiProductUsage(
@@ -1279,7 +1270,10 @@ export const buildXaiBillingSummary = (
     onDemandCap.hasEvidence ||
     explicitOnDemandUsed.hasEvidence ||
     (derivedOnDemandUsedCents !== null && derivedOnDemandUsedCents > 0);
-  const hasBillingPeriodData = hasMonthlyData || hasOnDemandData;
+  const hasMeaningfulOnDemandData =
+    (onDemandCapCents !== null && onDemandCapCents > 0) ||
+    (onDemandUsedCents !== null && onDemandUsedCents > 0);
+  const hasBillingPeriodData = hasMonthlyData || hasMeaningfulOnDemandData;
 
   if (!hasWeeklyData && !hasMonthlyData && !hasOnDemandData) return null;
 

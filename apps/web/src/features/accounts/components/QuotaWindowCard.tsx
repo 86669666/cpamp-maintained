@@ -24,8 +24,7 @@ import {
   IconCheck,
 } from '@/components/ui/icons';
 import {
-  isIntervalAccountQuotaWindow,
-  isModelScopedAccountQuotaWindow,
+  getAccountQuotaSemanticGroup,
   type AccountQuotaWindowKind,
 } from '@/features/accounts/model/accountQuotaDisplayWindows';
 import type { AccountQuotaBoundaryAccuracy } from '@/features/accounts/model/accountQuotaWindowDefinitions';
@@ -149,9 +148,7 @@ const formatObservedAt = (value: number, locale: string): string =>
   }).format(value);
 
 const inferCardMode = (window: AccountDetailQuotaWindow): QuotaWindowCardMode => {
-  if (!isIntervalAccountQuotaWindow(window)) return 'other';
-  if (isModelScopedAccountQuotaWindow(window)) return 'model';
-  return 'standard';
+  return getAccountQuotaSemanticGroup(window);
 };
 
 const windowIconForKind = (
@@ -426,6 +423,7 @@ export const QuotaWindowCard = ({
     resolvedMode === 'model' &&
     q.modelScope?.complete !== false &&
     Boolean(usage?.matched || previousUsage?.matched || q.forecast);
+  const modelBoundaryIncomplete = resolvedMode === 'model' && q.windowMode === 'unknown';
   const modelWindowStatsUnavailable = resolvedMode === 'model' && !modelHasUsableUsage;
   const lifecycleUnavailable = q.availability === 'pending_absent' || q.availability === 'inactive';
   const reopened = q.availability === 'active' && (q.activationGeneration ?? 0) > 1;
@@ -551,23 +549,25 @@ export const QuotaWindowCard = ({
     </div>
   );
 
-  const modelWarning = modelWindowStatsUnavailable ? (
-    <div className={styles.modelWarning} data-quota-model-warning="true" role="alert">
-      <span className={styles.warningIcon} aria-hidden="true">
-        <IconTriangleAlert size={13} />
-      </span>
-      <div>
-        <strong>
-          {q.modelScope?.complete === false
-            ? t('accounts.detail_scope_unknown')
-            : t('accounts.detail_model_window_stats_unavailable')}
-        </strong>
-        {q.modelScope?.complete === false ? null : (
-          <p>{t('accounts.detail_model_window_stats_unavailable_desc')}</p>
-        )}
+  const modelWarning =
+    modelWindowStatsUnavailable &&
+    (q.modelScope?.complete === false || !modelBoundaryIncomplete) ? (
+      <div className={styles.modelWarning} data-quota-model-warning="true" role="alert">
+        <span className={styles.warningIcon} aria-hidden="true">
+          <IconTriangleAlert size={13} />
+        </span>
+        <div>
+          <strong>
+            {q.modelScope?.complete === false
+              ? t('accounts.detail_scope_unknown')
+              : t('accounts.detail_model_window_stats_unavailable')}
+          </strong>
+          {q.modelScope?.complete === false ? null : (
+            <p>{t('accounts.detail_model_window_stats_unavailable_desc')}</p>
+          )}
+        </div>
       </div>
-    </div>
-  ) : null;
+    ) : null;
 
   const header = (
     <div className={styles.header}>
@@ -614,7 +614,7 @@ export const QuotaWindowCard = ({
 
   const progress = <QuotaProgress className={styles.bar} percent={q.remainingPercent} />;
 
-  if (resolvedMode === 'other' || !isIntervalAccountQuotaWindow(q)) {
+  if (resolvedMode === 'other') {
     return (
       <div
         className={`${styles.card} ${styles.otherCard}`}
@@ -651,7 +651,7 @@ export const QuotaWindowCard = ({
         {header}
         {progress}
         {modelWarning}
-        {modelHasUsableUsage ? (
+        {modelHasUsableUsage && !modelBoundaryIncomplete ? (
           <div className={styles.compareColumns} data-quota-model-comparison="true">
             <UsageColumn
               title={
@@ -699,6 +699,9 @@ export const QuotaWindowCard = ({
           </div>
         ) : null}
         {sourceMeta}
+        {modelBoundaryIncomplete ? (
+          <div className={styles.emptyState}>{t('accounts.detail_window_boundary_incomplete')}</div>
+        ) : null}
       </div>
     );
   }
@@ -712,51 +715,53 @@ export const QuotaWindowCard = ({
     >
       {header}
       {progress}
-      <div className={styles.compareColumns} data-quota-standard-comparison="true">
-        <UsageColumn
-          title={
-            q.previousPeriod === 'previous_equal_range'
-              ? t('accounts.detail_previous_equal_range', { defaultValue: '前一等长区间' })
-              : t('accounts.detail_previous_usage', { defaultValue: '上个窗口用量' })
-          }
-          subtitle={formatPreviousWindowRange(q, previousUsage, resolvedLocale)}
-          period="previous"
-          usage={previousUsage}
-          labels={usageLabels}
-          emptyMessage={t('accounts.detail_window_stats_empty', {
-            defaultValue: '窗口统计暂未采集',
-          })}
-        />
-        <UsageColumn
-          title={t('accounts.detail_current_used', { defaultValue: '当前窗口已用' })}
-          subtitle={formatCurrentWindowRange(
-            q,
-            usage,
-            resolvedLocale,
-            currentWindowBoundaryUnconfirmed
-          )}
-          period="current"
-          usage={usage}
-          labels={usageLabels}
-          emptyMessage={t('accounts.detail_window_stats_empty', {
-            defaultValue: '窗口统计暂未采集',
-          })}
-        />
-        <ForecastColumn
-          forecast={q.forecast}
-          title={t('accounts.detail_current_forecast', { defaultValue: '当前窗口预测' })}
-          subtitle={forecastSubtitle}
-          labels={{
-            requests: t('accounts.detail_forecast_requests', { defaultValue: '预计请求' }),
-            tokens: t('accounts.detail_forecast_tokens', { defaultValue: '预计 Token' }),
-            cost: t('accounts.detail_forecast_cost', { defaultValue: '预计花费' }),
-          }}
-          unavailableMessage={t('accounts.detail_forecast_success_rate_unavailable', {
-            defaultValue: '暂不预测成功率',
-          })}
-          emptyMessage={forecastEmptyMessage}
-        />
-      </div>
+      {q.windowMode !== 'unknown' ? (
+        <div className={styles.compareColumns} data-quota-standard-comparison="true">
+          <UsageColumn
+            title={
+              q.previousPeriod === 'previous_equal_range'
+                ? t('accounts.detail_previous_equal_range', { defaultValue: '前一等长区间' })
+                : t('accounts.detail_previous_usage', { defaultValue: '上个窗口用量' })
+            }
+            subtitle={formatPreviousWindowRange(q, previousUsage, resolvedLocale)}
+            period="previous"
+            usage={previousUsage}
+            labels={usageLabels}
+            emptyMessage={t('accounts.detail_window_stats_empty', {
+              defaultValue: '窗口统计暂未采集',
+            })}
+          />
+          <UsageColumn
+            title={t('accounts.detail_current_used', { defaultValue: '当前窗口已用' })}
+            subtitle={formatCurrentWindowRange(
+              q,
+              usage,
+              resolvedLocale,
+              currentWindowBoundaryUnconfirmed
+            )}
+            period="current"
+            usage={usage}
+            labels={usageLabels}
+            emptyMessage={t('accounts.detail_window_stats_empty', {
+              defaultValue: '窗口统计暂未采集',
+            })}
+          />
+          <ForecastColumn
+            forecast={q.forecast}
+            title={t('accounts.detail_current_forecast', { defaultValue: '当前窗口预测' })}
+            subtitle={forecastSubtitle}
+            labels={{
+              requests: t('accounts.detail_forecast_requests', { defaultValue: '预计请求' }),
+              tokens: t('accounts.detail_forecast_tokens', { defaultValue: '预计 Token' }),
+              cost: t('accounts.detail_forecast_cost', { defaultValue: '预计花费' }),
+            }}
+            unavailableMessage={t('accounts.detail_forecast_success_rate_unavailable', {
+              defaultValue: '暂不预测成功率',
+            })}
+            emptyMessage={forecastEmptyMessage}
+          />
+        </div>
+      ) : null}
       {sourceMeta}
       {q.windowMode === 'unknown' ? (
         <div className={styles.emptyState}>{t('accounts.detail_window_boundary_incomplete')}</div>

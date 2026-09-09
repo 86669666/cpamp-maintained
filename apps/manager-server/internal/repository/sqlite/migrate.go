@@ -558,6 +558,12 @@ func Migrate(db *sql.DB) error {
 			finished_at_ms integer,
 			last_error text
 		)`,
+		createUsageCodexLegacyIdentityEvidenceTable,
+		`insert or ignore into usage_monitoring_rollup_state (
+			rollup_name, schema_version, status, target_event_id, updated_at_ms
+		) select 'codex_legacy_identity_v1', 1,
+			case when exists (select 1 from usage_events limit 1) then 'pending' else 'ready' end,
+			coalesce((select max(id) from usage_events), 0), 0`,
 		`insert or ignore into usage_monitoring_rollup_state (
 			rollup_name, schema_version, status, target_event_id, updated_at_ms
 		) select 'stats_v1', 1,
@@ -1197,10 +1203,11 @@ func inspectUsageMonitoringMigrationSnapshot(db *sql.DB) (usageMonitoringMigrati
 		usageMonitoringHeaderLatestTable,
 		usageMonitoringRollupStateTable,
 		usageMonitoringSearchStateTable,
+		usageCodexLegacyIdentityEvidenceTable,
 	}
 	snapshot := usageMonitoringMigrationSnapshot{
 		tables:       make(map[string]bool, len(tableNames)),
-		rollupStates: make(map[string]bool, 3),
+		rollupStates: make(map[string]bool, 4),
 	}
 	rows, err := db.Query(`select name from sqlite_master where type = 'table' and name in (
 		'usage_events',
@@ -1211,7 +1218,8 @@ func inspectUsageMonitoringMigrationSnapshot(db *sql.DB) (usageMonitoringMigrati
 		'usage_monitoring_event_search_v1',
 		'usage_monitoring_header_latest_v1',
 		'usage_monitoring_rollup_state',
-		'usage_monitoring_search_index_state'
+		'usage_monitoring_search_index_state',
+		'usage_codex_legacy_identity_evidence_v1'
 	)`)
 	if err != nil {
 		return usageMonitoringMigrationSnapshot{}, fmt.Errorf("inspect usage monitoring tables: %w", err)
@@ -1239,10 +1247,11 @@ func inspectUsageMonitoringMigrationSnapshot(db *sql.DB) (usageMonitoringMigrati
 	if !snapshot.tables[usageMonitoringRollupStateTable] {
 		return snapshot, nil
 	}
-	stateRows, err := db.Query(`select rollup_name from usage_monitoring_rollup_state where rollup_name in (?, ?, ?)`,
+	stateRows, err := db.Query(`select rollup_name from usage_monitoring_rollup_state where rollup_name in (?, ?, ?, ?)`,
 		usageMonitoringStatsRollupName,
 		usageMonitoringMetadataRollupName,
 		usageMonitoringProjectionRollupName,
+		usageCodexLegacyIdentityRollupName,
 	)
 	if err != nil {
 		return usageMonitoringMigrationSnapshot{}, fmt.Errorf("inspect usage monitoring rollup states: %w", err)
@@ -1276,7 +1285,10 @@ func resetDamagedUsageMonitoringDerivations(db *sql.DB, snapshot usageMonitoring
 	projectionDamaged := snapshot.sourceTableMissing() ||
 		!snapshot.rollupStates[usageMonitoringProjectionRollupName] ||
 		!snapshot.tables[usageprojection.EventTable]
-	if !statsDamaged && !metadataDamaged && !projectionDamaged {
+	identityEvidenceDamaged := snapshot.sourceTableMissing() ||
+		!snapshot.rollupStates[usageCodexLegacyIdentityRollupName] ||
+		!snapshot.tables[usageCodexLegacyIdentityEvidenceTable]
+	if !statsDamaged && !metadataDamaged && !projectionDamaged && !identityEvidenceDamaged {
 		return nil
 	}
 	if snapshot.sourceTableMissing() {
@@ -1320,6 +1332,16 @@ func resetDamagedUsageMonitoringDerivations(db *sql.DB, snapshot usageMonitoring
 			}
 		}
 		if err := resetUsageMonitoringRollupState(tx, snapshot, usageMonitoringMetadataRollupName); err != nil {
+			return err
+		}
+	}
+	if identityEvidenceDamaged {
+		if snapshot.tables[usageCodexLegacyIdentityEvidenceTable] {
+			if err := parkDerivedTable(tx, usageCodexLegacyIdentityEvidenceTable, usageCodexLegacyIdentityEvidenceLegacy); err != nil {
+				return err
+			}
+		}
+		if err := resetUsageMonitoringRollupState(tx, snapshot, usageCodexLegacyIdentityRollupName); err != nil {
 			return err
 		}
 	}

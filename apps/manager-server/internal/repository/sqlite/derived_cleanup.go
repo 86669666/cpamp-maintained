@@ -42,6 +42,7 @@ var derivedLegacyTables = []string{
 	usageCacheChangesSourceLegacy,
 	usageAccountModelSourceLegacy,
 	usagePricingAccountSourceLegacy,
+	usageCodexLegacyIdentityEvidenceLegacy,
 }
 
 type OfflineCleanupResult struct {
