@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="seakee/CPA-Manager-Plus"
+repo="86669666/cpamp-maintained"
 default_cpamp_image="seakee/cpa-manager-plus:latest"
 default_cpa_image="eceasy/cli-proxy-api:latest"
 default_install_dir="${HOME:-.}/cpa-manager-plus"
@@ -2798,7 +2798,7 @@ remote-management:
   allow-remote: true
   disable-control-panel: false
   disable-auto-update-panel: true
-  panel-github-repository: "https://github.com/seakee/CPA-Manager-Plus"
+  panel-github-repository: "https://github.com/86669666/cpamp-maintained"
 
 usage-statistics-enabled: true
 redis-usage-queue-retention-seconds: 60
@@ -3626,8 +3626,10 @@ resolve_latest_version() {
     printf '%s\n' "$resolved"
     return
   fi
-  effective_url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${repo}/releases/latest")"
-  resolved="${effective_url##*/}"
+  resolved="$(curl --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 30 --max-filesize 128 -fsSL "https://raw.githubusercontent.com/${repo}/update-channel/stable-version.txt")"
+  if ! printf '%s\n' "$resolved" | LC_ALL=C grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+    die "Invalid stable update channel; specify CPAMP_VERSION explicitly."
+  fi
   validate_version_value "$(text version)" "$resolved"
   printf '%s\n' "$resolved"
 }

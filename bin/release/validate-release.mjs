@@ -2,9 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { generateReleaseInfo } from './generate-release-info.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const upstreamRepositoryUrl = 'https://github.com/seakee/CPA-Manager-Plus';
+const maintainedRepositoryUrl = 'https://github.com/86669666/cpamp-maintained';
 const maximumTelegramCharacters = 3500;
 const prereleaseIdentifier = String.raw`(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)`;
 const releaseTagPattern = new RegExp(
@@ -25,7 +27,7 @@ const releasePaths = (tag) => ({
   telegram: `docs/release-posts/${tag}-telegram.html`,
 });
 
-const expectedLanguageLink = (tag, language, repositoryUrl = upstreamRepositoryUrl) =>
+const expectedLanguageLink = (tag, language, repositoryUrl = maintainedRepositoryUrl) =>
   `${repositoryUrl}/blob/${tag}/docs/release-notes/${tag}-${language}.md`;
 
 const fail = (message) => {
@@ -118,7 +120,7 @@ export const validateReleaseNotes = ({
   tag,
   chinese,
   english,
-  repositoryUrl = upstreamRepositoryUrl,
+  repositoryUrl = maintainedRepositoryUrl,
 }) => {
   parseReleaseTag(tag);
   if (typeof chinese !== 'string' || chinese.trim() === '') fail('Chinese release notes are empty');
@@ -140,7 +142,7 @@ export const validateReleaseNotes = ({
 
 export const validateReleaseContent = ({
   tag,
-  repositoryUrl = upstreamRepositoryUrl,
+  repositoryUrl = maintainedRepositoryUrl,
   readFile = (filePath) => readFileSync(filePath, 'utf8'),
   fileExists = (filePath) => existsSync(filePath),
 }) => {
@@ -154,6 +156,7 @@ export const validateReleaseContent = ({
   const chinese = readFile(path.resolve(repoRoot, paths.chinese));
   const english = readFile(path.resolve(repoRoot, paths.english));
   const telegram = readFile(path.resolve(repoRoot, paths.telegram));
+  generateReleaseInfo(tag, '0'.repeat(40), chinese);
   return {
     paths,
     notes: validateReleaseNotes({ tag, chinese, english, repositoryUrl }),
@@ -181,7 +184,7 @@ const releaseTagFromPath = (filePath) => {
 
 export const validateChangedReleaseContent = ({
   changedFiles,
-  repositoryUrl = upstreamRepositoryUrl,
+  repositoryUrl = maintainedRepositoryUrl,
   readFile,
   fileExists,
 }) => {
@@ -194,12 +197,15 @@ export const validateChangedReleaseContent = ({
     ),
   ].sort();
 
+  const tagRepositoryUrl = (tag) =>
+    tag.includes('-maintained.') ? repositoryUrl : upstreamRepositoryUrl;
+
   return {
     tags,
     releases: tags.map((tag) =>
       validateReleaseContent({
         tag,
-        repositoryUrl: tag.includes('-maintained.') ? repositoryUrl : upstreamRepositoryUrl,
+        repositoryUrl: tagRepositoryUrl(tag),
         ...(readFile ? { readFile } : {}),
         ...(fileExists ? { fileExists } : {}),
       })

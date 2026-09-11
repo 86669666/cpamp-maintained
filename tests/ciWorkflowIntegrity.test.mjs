@@ -65,6 +65,23 @@ describe('GitHub Actions workflow integrity', () => {
     expect(requiredJob).toContain('"Release Content:${RELEASE_CONTENT_RESULT}"');
   });
 
+  it('keeps maintained publication native-only and refuses Docker alias automation', () => {
+    const workflow = readWorkflow('release.yml');
+    expect(workflow).not.toContain('docker/metadata-action');
+    expect(workflow).not.toContain('docker/build-push-action');
+    expect(workflow).not.toContain('build_and_push_docker:');
+    expect(workflow).not.toContain('publish-update-index');
+  });
+
+  it('runs repository-level release and installer tests from the root test entry', () => {
+    const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+    expect(packageJson.scripts.test).toContain('test:web');
+    expect(packageJson.scripts.test).toContain('test:repo');
+    expect(packageJson.scripts['test:repo']).toBe(
+      'vitest run tests/*.test.mjs --exclude tests/nativeControlScripts.test.mjs'
+    );
+  });
+
   it('uses NUL-delimited Git paths before classification and release validation', () => {
     const workflow = readWorkflow('pr-check.yml');
 
@@ -106,7 +123,7 @@ describe('GitHub Actions workflow integrity', () => {
       'git fetch --force https://github.com/seakee/CPA-Manager-Plus.git'
     );
     expect(buildJob).toContain(
-      'test "$(git rev-list -n 1 v1.12.10)" = "1ae656c82990c480f3f104326a08c6e0001eeb4c"'
+      'test "$(git rev-list -n 1 v1.12.11)" = "e1a8788ab796f4d001c5d1e9851c418989b05424"'
     );
     expect(buildJob).toContain('scripts/build-maintained-lightweight.sh');
     expect(workflow).toContain('prerelease="$(bun - "${release_tag}"');

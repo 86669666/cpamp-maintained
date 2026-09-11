@@ -20,10 +20,12 @@
     "preview": "bun run --cwd apps/web preview",
     "preview:demo": "bun run --cwd apps/web preview:demo",
     "release:validate": "bun bin/release/validate-release.mjs",
-    "test": "vitest run --root . --config apps/web/vite.config.ts apps/web/src tests",
+    "test": "bun run test:web && bun run test:repo",
     "lint": "bun run --cwd apps/web lint",
     "format": "bun run --cwd apps/web format",
     "type-check": "bun run --cwd apps/web type-check",
-    "manager-server:test": "cd apps/manager-server && go test ./..."
+    "manager-server:test": "cd apps/manager-server && go test ./...",
+    "test:web": "bun run --cwd apps/web test -- src",
+    "test:repo": "vitest run tests/*.test.mjs --exclude tests/nativeControlScripts.test.mjs"
   }
 }

@@ -7,13 +7,13 @@ import {
 describe('dashboard version release links', () => {
   it('builds the Manager release URL from a tagged version', () => {
     expect(buildDashboardVersionReleaseURL('manager', 'v1.12.0')).toBe(
-      'https://github.com/seakee/CPA-Manager-Plus/releases/tag/v1.12.0'
+      'https://github.com/86669666/cpamp-maintained/releases/tag/v1.12.0'
     );
   });
 
   it('builds the CLIProxyAPI release URL and adds a missing v prefix', () => {
     expect(buildDashboardVersionReleaseURL('core', '7.2.130')).toBe(
-      'https://github.com/router-for-me/CLIProxyAPI/releases/tag/v7.2.130'
+      'https://github.com/86669666/CLIProxyAPI-plugin-lockdown/releases/tag/v7.2.130'
     );
   });
 

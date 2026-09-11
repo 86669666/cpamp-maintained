@@ -21,13 +21,39 @@ const releasePaths = {
   telegram: `docs/release-posts/${releaseTag}-telegram.html`,
 };
 
-const chineseNotes = `# CPA Manager Plus ${releaseTag}
+const validMetadata = {
+  summary: {
+    zh: '更新说明',
+    en: 'Release update',
+  },
+  update: {
+    breaking: false,
+    migration_required: false,
+    minimum_direct_upgrade_version: null,
+    upgrade_guide_url: `https://github.com/86669666/cpamp-maintained/releases/tag/${releaseTag}`,
+  },
+  compatibility: {
+    minimum_cpa_version: null,
+  },
+};
 
-[English ->](https://github.com/seakee/CPA-Manager-Plus/blob/${releaseTag}/docs/release-notes/${releaseTag}-en.md)
+const makeChineseNotes = (metadata = validMetadata) => `# CPA Manager Plus ${releaseTag}
+
+[English ->](https://github.com/86669666/cpamp-maintained/blob/${releaseTag}/docs/release-notes/${releaseTag}-en.md)
+
+<!-- cpamp-update
+${typeof metadata === 'string' ? metadata : JSON.stringify(metadata, null, 2)}
+-->
+`;
+
+const chineseNotes = makeChineseNotes();
+const notesWithoutMetadata = `# CPA Manager Plus ${releaseTag}
+
+[English ->](https://github.com/86669666/cpamp-maintained/blob/${releaseTag}/docs/release-notes/${releaseTag}-en.md)
 `;
 const englishNotes = `# CPA Manager Plus ${releaseTag}
 
-[中文 ->](https://github.com/seakee/CPA-Manager-Plus/blob/${releaseTag}/docs/release-notes/${releaseTag}-zh.md)
+[中文 ->](https://github.com/86669666/cpamp-maintained/blob/${releaseTag}/docs/release-notes/${releaseTag}-zh.md)
 `;
 const telegramPost = '<b>v1.2.3</b>\n\n• Release update';
 
@@ -71,11 +97,11 @@ describe('release content validation', () => {
   it('accepts reciprocal tag-pinned links for the maintained repository', () => {
     const repositoryUrl = 'https://github.com/86669666/cpamp-maintained';
     const maintainedChinese = chineseNotes.replace(
-      'https://github.com/seakee/CPA-Manager-Plus',
+      'https://github.com/86669666/cpamp-maintained',
       repositoryUrl
     );
     const maintainedEnglish = englishNotes.replace(
-      'https://github.com/seakee/CPA-Manager-Plus',
+      'https://github.com/86669666/cpamp-maintained',
       repositoryUrl
     );
 
@@ -123,7 +149,7 @@ describe('release content validation', () => {
     );
   });
 
-  it('validates every release tag represented by changed release paths', () => {
+  it('requires valid cpamp-update metadata in Chinese release notes', () => {
     const contents = new Map([
       [releasePaths.chinese, chineseNotes],
       [releasePaths.english, englishNotes],
@@ -132,9 +158,55 @@ describe('release content validation', () => {
     const readFile = (filePath) => contents.get(filePath.split('/').slice(-3).join('/'));
     const fileExists = (filePath) => contents.has(filePath.split('/').slice(-3).join('/'));
 
+    // Valid release content passes.
+    expect(validateReleaseContent({ tag: releaseTag, readFile, fileExists })).toMatchObject({
+      paths: releasePaths,
+    });
+
+    // Missing metadata block fails.
+    contents.set(releasePaths.chinese, notesWithoutMetadata);
+    expect(() => validateReleaseContent({ tag: releaseTag, readFile, fileExists })).toThrow(
+      'Release notes require exactly one cpamp-update JSON comment'
+    );
+
+    // Malformed JSON fails.
+    contents.set(releasePaths.chinese, makeChineseNotes('{ invalid json'));
+    expect(() => validateReleaseContent({ tag: releaseTag, readFile, fileExists })).toThrow();
+
+    // Missing required field (breaking) fails.
+    const missingBreaking = JSON.parse(JSON.stringify(validMetadata));
+    delete missingBreaking.update.breaking;
+    contents.set(releasePaths.chinese, makeChineseNotes(missingBreaking));
+    expect(() => validateReleaseContent({ tag: releaseTag, readFile, fileExists })).toThrow(
+      'Explicit update flags required'
+    );
+  });
+
+  it('validates every release tag represented by changed release paths and fails on bad metadata', () => {
+    const upstreamChineseNotes = chineseNotes.replaceAll(
+      'https://github.com/86669666/cpamp-maintained/blob/',
+      'https://github.com/seakee/CPA-Manager-Plus/blob/'
+    );
+    const upstreamEnglishNotes = englishNotes.replaceAll(
+      'https://github.com/86669666/cpamp-maintained/blob/',
+      'https://github.com/seakee/CPA-Manager-Plus/blob/'
+    );
+    const upstreamNotesWithoutMetadata = notesWithoutMetadata.replaceAll(
+      'https://github.com/86669666/cpamp-maintained/blob/',
+      'https://github.com/seakee/CPA-Manager-Plus/blob/'
+    );
+    const contents = new Map([
+      [releasePaths.chinese, upstreamChineseNotes],
+      [releasePaths.english, upstreamEnglishNotes],
+      [releasePaths.telegram, telegramPost],
+    ]);
+    const readFile = (filePath) => contents.get(filePath.split('/').slice(-3).join('/'));
+    const fileExists = (filePath) => contents.has(filePath.split('/').slice(-3).join('/'));
+
     expect(
       validateChangedReleaseContent({
         changedFiles: Object.values(releasePaths),
+        repositoryUrl: 'https://github.com/86669666/cpamp-maintained',
         readFile,
         fileExists,
       })
@@ -142,6 +214,19 @@ describe('release content validation', () => {
       tags: [releaseTag],
       releases: [expect.objectContaining({ paths: releasePaths })],
     });
+
+    // changed-content gate fails when metadata is missing
+    contents.set(releasePaths.chinese, upstreamNotesWithoutMetadata);
+    expect(() =>
+      validateChangedReleaseContent({
+        changedFiles: Object.values(releasePaths),
+        repositoryUrl: 'https://github.com/86669666/cpamp-maintained',
+        readFile,
+        fileExists,
+      })
+    ).toThrow('Release notes require exactly one cpamp-update JSON comment');
+
+    contents.set(releasePaths.chinese, upstreamChineseNotes);
     expect(() =>
       validateChangedReleaseContent({
         changedFiles: ['docs/release-notes/README.md'],
@@ -164,13 +249,13 @@ describe('release content validation', () => {
         maintainedPaths.chinese,
         chineseNotes
           .replaceAll(releaseTag, maintainedTag)
-          .replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl),
+          .replace('https://github.com/86669666/cpamp-maintained', repositoryUrl),
       ],
       [
         maintainedPaths.english,
         englishNotes
           .replaceAll(releaseTag, maintainedTag)
-          .replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl),
+          .replace('https://github.com/86669666/cpamp-maintained', repositoryUrl),
       ],
       [maintainedPaths.telegram, telegramPost],
     ]);
@@ -205,26 +290,26 @@ describe('release content validation', () => {
         upstreamPaths.chinese,
         chineseNotes
           .replaceAll(releaseTag, 'v1.12.5')
-          .replace('https://github.com/seakee/CPA-Manager-Plus', upstreamRepositoryUrl),
+          .replace('https://github.com/86669666/cpamp-maintained', upstreamRepositoryUrl),
       ],
       [
         upstreamPaths.english,
         englishNotes
           .replaceAll(releaseTag, 'v1.12.5')
-          .replace('https://github.com/seakee/CPA-Manager-Plus', upstreamRepositoryUrl),
+          .replace('https://github.com/86669666/cpamp-maintained', upstreamRepositoryUrl),
       ],
       [upstreamPaths.telegram, telegramPost],
       [
         maintainedPaths.chinese,
         chineseNotes
           .replaceAll(releaseTag, maintainedTag)
-          .replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl),
+          .replace('https://github.com/86669666/cpamp-maintained', repositoryUrl),
       ],
       [
         maintainedPaths.english,
         englishNotes
           .replaceAll(releaseTag, maintainedTag)
-          .replace('https://github.com/seakee/CPA-Manager-Plus', repositoryUrl),
+          .replace('https://github.com/86669666/cpamp-maintained', repositoryUrl),
       ],
       [maintainedPaths.telegram, telegramPost],
     ]);

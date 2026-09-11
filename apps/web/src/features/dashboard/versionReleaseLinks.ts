@@ -1,8 +1,8 @@
 export type DashboardVersionReleaseTarget = 'manager' | 'core';
 
 const RELEASE_REPOSITORIES: Record<DashboardVersionReleaseTarget, string> = {
-  manager: 'seakee/CPA-Manager-Plus',
-  core: 'router-for-me/CLIProxyAPI',
+  manager: '86669666/cpamp-maintained',
+  core: '86669666/CLIProxyAPI-plugin-lockdown',
 };
 
 const prereleaseIdentifier = String.raw`(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)`;
