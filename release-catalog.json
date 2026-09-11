@@ -1,0 +1,45 @@
+{
+  "v1.12.11-maintained.1": {
+    "info": {
+      "schema_version": 1,
+      "release": {
+        "version": "v1.12.11-maintained.1",
+        "stage": "stable",
+        "source_commit": "dbb6ee9048ac7e89cc0b6a6b1359e5dc5f6b5ea1"
+      },
+      "content": {
+        "summary": {
+          "zh": "新增可信版本更新检查与发布通道，并修复 Codex 重置额度后 CPA 路由冷却未同步清除的问题。",
+          "en": "Adds verified release update checks and channels, and fixes stale CPA routing cooldown after Codex reset-credit redemption."
+        },
+        "notes": {
+          "zh": "https://github.com/86669666/cpamp-maintained/blob/v1.12.11-maintained.1/docs/release-notes/v1.12.11-maintained.1-zh.md",
+          "en": "https://github.com/86669666/cpamp-maintained/blob/v1.12.11-maintained.1/docs/release-notes/v1.12.11-maintained.1-en.md"
+        }
+      },
+      "update": {
+        "breaking": false,
+        "migration_required": false,
+        "minimum_direct_upgrade_version": null,
+        "upgrade_guide_url": "https://github.com/86669666/cpamp-maintained/releases/tag/v1.12.11-maintained.1"
+      },
+      "distribution": {
+        "docker": null,
+        "native": {
+          "assets": [
+            "cpa-manager-plus_v1.12.11-maintained.1_darwin_amd64.tar.gz",
+            "cpa-manager-plus_v1.12.11-maintained.1_darwin_arm64.tar.gz",
+            "cpa-manager-plus_v1.12.11-maintained.1_linux_amd64.tar.gz",
+            "cpa-manager-plus_v1.12.11-maintained.1_linux_arm64.tar.gz",
+            "cpa-manager-plus_v1.12.11-maintained.1_windows_amd64.zip",
+            "cpa-manager-plus_v1.12.11-maintained.1_windows_arm64.zip"
+          ]
+        }
+      },
+      "compatibility": {
+        "minimum_cpa_version": null
+      }
+    },
+    "digest": "sha256:9541b348a3189b38148e799c7111b733a9ff9f48d2c38300a2f1f3758f5bc725"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "generated_at": "2026-09-11T05:07:55Z",
+  "channels": {
+    "stable": {
+      "version": "v1.12.11-maintained.1"
+    },
+    "rc": {
+      "version": "v1.12.11-maintained.1"
+    },
+    "beta": null
+  }
+}
